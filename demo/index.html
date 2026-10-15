@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent station demo</title>
+<style>body { margin: 0; background: #070a12; color: #c9d2e0; font: 14px/1.5 monospace; } p { padding: 24px; }</style>
+</head>
+<body>
+<p>Loading the demo station…</p>
+<script>
+// The live demo: the station page of this repo (page/office.html), unchanged,
+// with demo/data.js standing in for its database. Nothing here is a copy of
+// the page, so the demo always shows the page as it is in the repo.
+(async () => {
+  try {
+    const page = await (await fetch("../page/office.html", { cache: "no-store" })).text();
+    document.open();
+    document.write('<!doctype html><html lang="en"><head><meta charset="utf-8">'
+      + '<meta name="viewport" content="width=device-width, initial-scale=1">'
+      + '<title>Agent station demo</title><base href="../page/">'
+      + '<script src="../demo/data.js"><\/script></head><body>' + page + '</body></html>');
+    document.close();
+  } catch {
+    document.body.innerHTML = "<p>The demo could not load the station page.</p>";
+  }
+})();
+</script>
+</body>
+</html>

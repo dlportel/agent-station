@@ -1,0 +1,121 @@
+{
+  "title": "ACME STATION",
+  "language": "en",
+  "theme": "space",
+  "coordination": "station",
+  "repos": [
+    {
+      "folder": "station",
+      "remote": "github.com/acme/station"
+    },
+    {
+      "folder": "web",
+      "remote": "github.com/acme/web"
+    },
+    {
+      "folder": "api",
+      "remote": "github.com/acme/api"
+    },
+    {
+      "folder": "mobile",
+      "remote": "github.com/acme/mobile"
+    },
+    {
+      "folder": "docs",
+      "remote": "github.com/acme/docs"
+    }
+  ],
+  "senders": {},
+  "layout": [
+    {
+      "label": "PRODUCT",
+      "items": [
+        "web",
+        "mobile",
+        "#canteen"
+      ]
+    },
+    {
+      "label": "PLATFORM",
+      "items": [
+        "api",
+        "docs",
+        "#hangar"
+      ]
+    }
+  ],
+  "departments": {
+    "station": {
+      "name": "Coordination"
+    },
+    "web": {
+      "name": "Web",
+      "description": "Builds the public website and its content.",
+      "place": "studio",
+      "accent": "#c792ea",
+      "wall": [
+        "#2e2240",
+        "#231a32"
+      ],
+      "floor": "carpet2",
+      "furniture": [
+        "easel",
+        "plant"
+      ],
+      "accessory": "beret",
+      "weight": 1.2
+    },
+    "api": {
+      "name": "API",
+      "description": "Builds the REST API the web and mobile apps use.",
+      "place": "engine room",
+      "accent": "#4fc3f7",
+      "wall": [
+        "#1d2c40",
+        "#172333"
+      ],
+      "floor": "grate",
+      "furniture": [
+        "rack",
+        "rack",
+        "plant"
+      ],
+      "accessory": "belt",
+      "weight": 1.2
+    },
+    "mobile": {
+      "name": "Mobile",
+      "description": "Builds the iOS and Android app.",
+      "place": "workshop",
+      "accent": "#97c459",
+      "wall": [
+        "#25311b",
+        "#1c2615"
+      ],
+      "floor": "metal",
+      "furniture": [
+        "chart",
+        "plant"
+      ],
+      "accessory": "headset",
+      "weight": 1.2
+    },
+    "docs": {
+      "name": "Docs",
+      "description": "Writes the user guides and the API reference.",
+      "place": "library",
+      "accent": "#f2c14e",
+      "wall": [
+        "#352d1c",
+        "#282215"
+      ],
+      "floor": "darkwood",
+      "furniture": [
+        "shelf",
+        "filing"
+      ],
+      "accessory": "tie",
+      "weight": 1
+    }
+  }
+}
