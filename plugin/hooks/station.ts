@@ -145,6 +145,18 @@ export function coordinationPeerNote(proposeTool: string, language: Lang = 'en',
   ].join('\n\n')
 }
 
+// The mark a new-session order's card carries, so the session that the card
+// opens (and only it) can be matched to the order: the order's id and the room
+// it is for. Kept in English and in this one form, whatever the station's
+// language, since the plugin reads it back.
+export function orderMark(orderId: string, folder: string): string {
+  return `[agent-station order ${orderId} for ${folder}]`
+}
+export function readOrderMark(text: unknown): { orderId: string; folder: string } | undefined {
+  const match = /\[agent-station order ([A-Za-z0-9_.:-]{1,200}) for ([A-Za-z0-9_.-]{1,200})\]/.exec(String(text ?? ''))
+  return match ? { orderId: match[1], folder: match[2] } : undefined
+}
+
 // A message to another Claude Code session of the app: SendMessage to a
 // session id (local_…), or the app's own send_message tool. SendMessage to the
 // session's own subagents or teammates is not one.

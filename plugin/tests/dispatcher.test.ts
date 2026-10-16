@@ -201,14 +201,14 @@ test('an idle session quiet for hours still takes an order, unless the app close
   await clock.advance(60_000)
 })
 
-test('a new-session order prepares a card in the department\'s repo and waits for the click', { options }, async ($, on) => {
+test('a new-session order prepares a card in the room\'s repo and waits for the click', { options }, async ($, on) => {
   const clock = mock.clock(on)
   const mcpCalls: any[] = []
   stubEngine(on, mcpCalls)
   stubGit(on)
   stubFolders(on)
   const db = fakeOfficeDatabase(on)
-  db.seed('orders', 'o2', { text: 'Atiende la issue 2', folder: 'app', mode: 'new', status: 'pending', createdAt: Date.now() })
+  db.seed('orders', 'o2', { text: 'Handle issue 2', folder: 'app', mode: 'new', status: 'pending', createdAt: Date.now() })
 
   await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
   await clock.advance(5_000)
@@ -216,6 +216,67 @@ test('a new-session order prepares a card in the department\'s repo and waits fo
   expect(db.read('orders', 'o2')?.status).toBe('needs_click')
   const spawn = mcpCalls.find(c => c.tool === 'spawn_task')
   expect(spawn?.args?.cwd).toBe('C:\\work\\app')
+  expect(String(spawn?.args?.prompt)).toContain('[agent-station order o2 for app]')
+  await clock.advance(60_000)
+})
+
+// A new-session order waiting for its card's click goes to the session the card
+// opened, which recorded the order's mark as fromOrder, and to no other.
+function seedSpawnedOrder(db: any) {
+  const spawnedAt = Date.now() - 60_000
+  db.seed('orders', 'n1', { text: 'Remove the TLS keys from the repo', folder: 'app', mode: 'new', status: 'needs_click', claimedBy: 'TESTPC', spawnedAt, createdAt: spawnedAt })
+  return spawnedAt
+}
+
+test('a spawned order goes to the session its card opened', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls)
+  stubGit(on)
+  const db = fakeOfficeDatabase(on)
+  const spawnedAt = seedSpawnedOrder(db)
+  db.seed('sessions', 'local_other', { folder: 'app', machine: 'TESTPC', state: 'idle', startedAt: spawnedAt + 1_000, title: 'Unrelated work' })
+  db.seed('sessions', 'local_card', { folder: 'app', machine: 'TESTPC', state: 'working', startedAt: spawnedAt + 5_000, title: 'TLS keys', fromOrder: 'n1' })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  expect(db.read('orders', 'n1')?.status).toBe('delivered')
+  expect(db.read('orders', 'n1')?.deliveredTo).toBe('local_card')
+  await clock.advance(60_000)
+})
+
+test('a session of the same room that opens after the card does not take the order', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls)
+  stubGit(on)
+  const db = fakeOfficeDatabase(on)
+  const spawnedAt = seedSpawnedOrder(db)
+  db.seed('sessions', 'local_other', { folder: 'app', machine: 'TESTPC', state: 'working', startedAt: spawnedAt + 1_000, title: 'Unrelated work' })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  expect(db.read('orders', 'n1')?.status).toBe('needs_click')
+  await clock.advance(60_000)
+})
+
+test('a card run in a session of another room fails the order instead of delivering it', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls)
+  stubGit(on)
+  const db = fakeOfficeDatabase(on)
+  const spawnedAt = seedSpawnedOrder(db)
+  db.seed('sessions', 'local_coordination', { folder: 'coord', machine: 'TESTPC', state: 'working', startedAt: spawnedAt - 600_000, title: 'Coordination', fromOrder: 'n1' })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  expect(db.read('orders', 'n1')?.status).toBe('failed')
+  expect(String(db.read('orders', 'n1')?.note)).toContain('coord')
+  expect(db.read('orders', 'n1')?.deliveredTo).toBeUndefined()
   await clock.advance(60_000)
 })
 

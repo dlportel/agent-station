@@ -43,6 +43,10 @@ const ES: Record<string, string> = {
   'Order from the room "{room}" (folder `{folder}`), asked by {session} and sent from {station} with the user\'s approval:':
     'Orden de la sala «{room}» (carpeta `{folder}`), pedida por {session} y enviada desde {station} con la aprobación del usuario:',
   // the dispatcher's notes on orders
+  'Its card was run in a session of {other}, not in {room}, so nobody in {room} is doing it. Give the order again and open its card as a new session.':
+    'Su tarjeta se ejecutó en una sesión de {other}, no en {room}, así que nadie de {room} la está haciendo. Vuelve a dar la orden y abre su tarjeta como sesión nueva.',
+  'This message is the station order {order}, which is for the room {room}, not for this session (room {own}). Do not carry it out: tell the user that it belongs to {room}, and that its card has to be opened as a new session there.':
+    'Este mensaje es la orden {order} de la estación, que es para la sala {room}, no para esta sesión (sala {own}). No la ejecutes: dile al usuario que es de {room} y que su tarjeta hay que abrirla allí como sesión nueva.',
   'The chosen session was no longer open: another one of the room takes it.': 'La sesión indicada ya no estaba abierta: la recibe otra de la sala.',
   'It could not be delivered: {error}': 'No se pudo entregar: {error}',
   'The chosen session is no longer open on {machine}.': 'La sesión indicada ya no está abierta en {machine}.',

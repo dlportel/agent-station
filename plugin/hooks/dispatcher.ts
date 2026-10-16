@@ -1,5 +1,5 @@
 import { callOffice, mcpText, parseDocs, type EngineIo, type OfficeDoc } from './office'
-import { folderForRemote, joinPath, parentOf, readMainRepoTop, readOriginRemote, type Station } from './station'
+import { folderForRemote, joinPath, orderMark, parentOf, readMainRepoTop, readOriginRemote, type Station } from './station'
 import { tx } from './locale-es'
 
 // Delivers the orders written in the station to this machine's sessions. One
@@ -402,7 +402,10 @@ async function prepareNewSession(context: DispatcherContext, order: OfficeDoc) {
   const reply = await callMcpSafely(context, 'ccd_session', 'spawn_task', {
     title: `${say(context, 'Station')}: ${text.slice(0, 50)}`,
     tldr: say(context, 'Order sent from the station for {room}. Click to open the session with this order as its first message.', { room: folder }),
-    prompt: composeOrderMessage(context, order),
+    // The mark lets the session the card opens claim this order, and only it.
+    prompt: `${composeOrderMessage(context, order)}
+
+${orderMark(order.id, folder)}`,
     cwd: local.path,
   })
   await updateOrder(context, order, reply.isOk
@@ -410,6 +413,11 @@ async function prepareNewSession(context: DispatcherContext, order: OfficeDoc) {
     : { status: 'failed', note: say(context, 'The new session could not be prepared: {error}', { error: reply.text.slice(0, 300) }) })
 }
 
+// A new-session order goes to the session its card opened: the one that found
+// the order's mark in its first message and recorded it as fromOrder. Never to
+// a session that merely started in the room meanwhile. A card run in a session
+// of another room (such as "do it here" in the coordination session) fails the
+// order, since nobody in its room is doing it.
 async function completeSpawnedOrders(context: DispatcherContext, spawned: OfficeDoc[]) {
   const waiting = spawned.filter(order => order.data.claimedBy === context.machine)
   for (const order of waiting) {
@@ -417,14 +425,16 @@ async function completeSpawnedOrders(context: DispatcherContext, spawned: Office
     const reply = await callOffice(context.io, context.officeUrl, {
       action: 'query',
       collection: 'sessions',
-      query: { where: [['folder', '==', String(order.data.folder ?? '')]], limit: 100 },
+      query: { where: [['fromOrder', '==', order.id]], limit: 10 },
     })
     if (!reply.isOk) continue
-    const spawnedAt = Number(order.data.spawnedAt ?? 0)
-    const session = parseDocs(reply.text)
-      .filter(s => s.data.machine === context.machine && Number(s.data.startedAt ?? 0) >= spawnedAt)
-      .sort((a, b) => Number(a.data.startedAt ?? 0) - Number(b.data.startedAt ?? 0))[0]
+    const session = parseDocs(reply.text)[0]
     if (!session) continue
+    const folder = String(order.data.folder ?? '')
+    if (session.data.folder !== folder) {
+      await updateOrder(context, order, { status: 'failed', note: say(context, 'Its card was run in a session of {other}, not in {room}, so nobody in {room} is doing it. Give the order again and open its card as a new session.', { other: session.data.folder || '?', room: folder }) })
+      continue
+    }
     const model = order.data.model ? String(order.data.model) : ''
     let note = say(context, 'Session created with your click.')
     if (model && model !== session.data.model) {

@@ -1,7 +1,7 @@
 import type { Register } from 'claude-code'
 import { artifactKey, callOffice, isOfficeCall, mcpText, officeCallKey, parseDocs, toolDetail, type EngineIo, type OfficeDoc } from './office'
 import { startDispatcherInBackground } from './dispatcher'
-import { coordinationPeerNote, folderForRemote, joinPath, LANGS, readOriginRemote, readStationConfig, roomsLine, stationMap, stationRooms, stationUrls, isDirectSessionMessage, type Lang, type Station } from './station'
+import { coordinationPeerNote, folderForRemote, joinPath, LANGS, readOriginRemote, readStationConfig, roomsLine, stationMap, stationRooms, stationUrls, isDirectSessionMessage, readOrderMark, type Lang, type Station } from './station'
 import { tx } from './locale-es'
 
 // Observer only: every hook hands the event on unchanged and never waits on
@@ -96,6 +96,8 @@ export const register: Register = (on, options) => {
   // first message as added context (waiting a moment for it while it is being
   // read), and again after /clear or a compaction, which drop it.
   let stationMapText = ''
+  // The room this session belongs to, known as soon as its map is.
+  let ownFolder = ''
   let isMapDelivered = false
   // Settles once the session knows whether it belongs to a station (and, if it
   // does, has its map), so the first message waits for that and no longer.
@@ -196,6 +198,7 @@ export const register: Register = (on, options) => {
       const pluginName = await calls.pluginName()
       const expectedTool = `mcp__${pluginName || 'agent-station'}__${PROPOSE_TOOL_NAME}`
       stationMapText = stationMap(member.station, member.folder, expectedTool)
+      ownFolder = member.folder
       markMapSettled()
       // The tool names the station's rooms and the session's own, so an agent
       // knows where it can send work even without the map.
@@ -238,6 +241,10 @@ export const register: Register = (on, options) => {
     // A message from another session to the coordination session carries the
     // reminder that it does not forward work or results between rooms.
     if (isCoordination && proposeToolName && isPeerMessage(e.origin)) e = { ...e, context: [...(e.context ?? []), coordinationPeerNote(proposeToolName, station?.language, `/${coordinatorCommand(station?.language ?? 'en').name}`)] }
+    if (readOrderMark(e.text)) {
+      await Promise.race([mapSettled, $.clock.sleep(MAP_WAIT_MS)])
+      e = claimOrderMark(e)
+    }
     if (isMapDelivered) return next(e)
     if (!stationMapText) {
       startOnce(engineIoFor($, callToolAsMod), sessionCallsFor($), 'working')
@@ -251,6 +258,20 @@ export const register: Register = (on, options) => {
     else report = { ...report, mapAt: Date.now() }
     return next({ ...e, context: [...(e.context ?? []), stationMapText] })
   })
+
+  // A new-session order's card carries its order's mark. The session that gets
+  // it records the order as fromOrder, so the dispatcher hands the order to it
+  // and to no other. A session of another room records it too (the dispatcher
+  // then fails the order) and is told not to do it.
+  function claimOrderMark(e: any) {
+    const mark = readOrderMark(e.text)
+    if (!mark || !station || !ownFolder) return e
+    if (isReporting) updateReport({ fromOrder: mark.orderId }, true)
+    else report = { ...report, fromOrder: mark.orderId }
+    if (ownFolder === mark.folder) return e
+    const note = tx(station.language, 'This message is the station order {order}, which is for the room {room}, not for this session (room {own}). Do not carry it out: tell the user that it belongs to {room}, and that its card has to be opened as a new session there.', { order: mark.orderId, room: mark.folder, own: ownFolder })
+    return { ...e, context: [...(e.context ?? []), note] }
+  }
 
   on('session.compact', ($, e, next) => {
     isMapDelivered = false

@@ -161,7 +161,13 @@ the dispatcher lease and checks the pending orders every 30 seconds. For an open
 an idle one of that department on that machine, switches its model if the order asks for another,
 and sends it the order as a message. A new session cannot be created from a plugin, so the
 dispatcher leaves a task card in the coordination session and the order shows as waiting for your
-click. An order for one particular session goes to the machine of that session; any other order
+click, first among the pending orders on the bridge, where it can also be discarded. The card's
+message ends with the order's mark, `[agent-station order <id> for <folder>]`. The session the card
+opens records that order as its `fromOrder`, and the dispatcher delivers the order to that session
+only, never to another one that happens to start in the room meanwhile. If the card is run in a
+session of another room (for example with "do it here" in the coordination session), that session
+is told the order is not for it and not to carry it out, and the order fails with a note saying so.
+An order for one particular session goes to the machine of that session; any other order
 is taken by the first dispatcher that sees it, on whichever machine, so with several machines it
 may open a new session on one even when another has an idle session of that department.
 

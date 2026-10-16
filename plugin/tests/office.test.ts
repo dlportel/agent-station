@@ -932,3 +932,29 @@ test('a message to another Claude Code session is told apart from one to a subag
   expect(isDirectSessionMessage('SendMessage', { to: 'my-reviewer', message: 'go on' })).toBe(false)
   expect(isDirectSessionMessage('Read', { file_path: 'x' })).toBe(false)
 })
+
+// The session a new-session order's card opens finds the order's mark in its
+// first message and records it, so the dispatcher can hand it that order. A
+// session of another room records it too, and is told not to carry it out.
+test('a session records the order its card carries, and is warned when it is for another room', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-card', 'C:/work/app')
+  const written: any[] = []
+  stubStation(on, e => {
+    if (e.collection === 'sessions' && e.action === 'set') written.push(e.data)
+    return { result: { text: `The document is now at version ${written.length}.` } }
+  })
+  on('prompt.submit' as any, (_$: any, e: any) => ({ text: e.text, context: e.context }))
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(30_000)
+  const own: any = await ($ as any).prompt.submit({ text: 'Remove the TLS keys.\n\n[agent-station order n1 for app]' })
+  await clock.advance(30_000)
+  const other: any = await ($ as any).prompt.submit({ text: 'Fix the docs.\n\n[agent-station order n2 for legal]' })
+  await clock.advance(30_000)
+
+  expect(written.some(d => d.fromOrder === 'n1')).toBe(true)
+  expect(written.some(d => d.fromOrder === 'n2')).toBe(true)
+  expect(String((own.context ?? []).join('\n'))).not.toContain('Do not carry it out')
+  expect(String((other.context ?? []).join('\n'))).toContain('which is for the room legal, not for this session (room app)')
+})
