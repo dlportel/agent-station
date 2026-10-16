@@ -1,17 +1,20 @@
 # Agent Station
 
-A control room for running several Claude Code agents across your repos. It shows which session
-is working, which one is waiting for your permission and which one has gone quiet; it lets you
-give any of them work from one place; and it lets agents ask each other for work, with nothing
-delivered until you approve it.
+Lets Claude Code agents in different repos work together, with you approving every step.
 
-When you run many sessions at once, you lose track of them: one has been waiting ten minutes for
-you to approve a command, another finished long ago, and the agent in one repo needs something
-from the agent in another and has no way to ask. The station puts all of that on one page.
+Every agent gets a map of the station: the other agents, the repo each one works in and what each
+one does. So it knows it is not alone, knows where it is, and knows who to ask for what. When the
+agent in your app repo needs an endpoint from the API repo, it proposes the work to the API's agent
+itself; the answer comes back to the very session that asked, and the two can go back and forth,
+or bring a third agent in. Nothing moves between agents until you approve it, or edit it first,
+on one page that also shows what every session is doing.
 
-It draws each repo as a room and each session as a robot, so the state of every session reads at
-a glance: at its desk while it works, with the tool it is using and what it touches, raising its
-arm when it needs you, strolling around when it is idle.
+That ends copying prompts and context from one session to another. It suits projects whose repos
+depend on each other (an app, its API, the website, the docs), and small teams or solo founders who
+run several agents at once.
+
+The page draws each repo as a room and each session as a robot, so the state of every agent reads
+at a glance: at its desk while it works, raising its arm when it needs you, idle when it is done.
 
 The station is a [claude.ai](https://claude.ai) artifact with its own database, and a Claude Code
 plugin reports every session to it. Nothing runs on a server of yours.
@@ -23,16 +26,18 @@ page with sample data, nothing to install ([in Spanish](https://dlportel.github.
 
 ## What you get
 
+- **Agents that know each other.** With its first message, every session gets the station's map:
+  the rooms, the repo of each, what each room's agent does, and which room it is in itself.
+- **Work between agents, both ways, with your approval.** An agent asks another repo's agent for
+  something with the `propose_order` tool, and the answer goes back to the session that asked, so
+  agents can hold a conversation across repos. Every request waits on the page until you approve
+  it, and you can edit it first. Agents never message each other behind your back.
 - **Every session at a glance.** Working, waiting for your permission or your answer, idle,
   without signal or closed, in the room of its repo. A session's card shows its tool, its model,
   its subagents, and a link that opens it.
-- **Agents that ask each other for work, with your approval.** Every session gets a map of the
-  station: the rooms, what each one's agent does, and the `propose_order` tool to ask another
-  repo's agent for something or return a result. Nothing is delivered until you approve it on the
-  page, and you can edit it first. Agents never message each other behind your back.
-- **Orders from one place.** Send work to a repo: to a free session, a particular one, or a new
-  one, with the model you choose. One session per machine, the coordination session, delivers
-  them.
+- **Orders from one place.** Send work to a repo yourself: to a free session, a particular one, or
+  a new one, with the model you choose. One session per machine, the coordination session,
+  delivers every approved order.
 - **A station you shape.** Rooms, decks, colours, furniture, robot silhouettes and accessories are
   set in the page's configuration panel. The station speaks English or Spanish, and its scenery
   is a theme you can swap for one of your own.
