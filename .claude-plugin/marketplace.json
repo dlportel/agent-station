@@ -1,6 +1,6 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "claude-agent-station",
+  "name": "agent-station",
   "description": "A control room for your Claude Code agents across repos: see what every session is doing, give them work, and let agents ask each other for work with your approval",
   "owner": {
     "name": "Amn"

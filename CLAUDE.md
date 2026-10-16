@@ -1,4 +1,4 @@
-# Working on claude-agent-station
+# Working on Agent Station
 
 ## What is where
 

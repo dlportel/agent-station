@@ -1,6 +1,6 @@
 {
   "name": "agent-station",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Reports each Claude Code session of a station's repos to that station, a claude.ai artifact, without ever blocking the session",
   "author": {
     "name": "Amn"

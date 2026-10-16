@@ -2466,9 +2466,10 @@ const isCoordinationRow = r => !isGroupRemote(r.remote) && !!rowKey(r) && rowKey
 // The recommended coordination: a clone of the engine's own repo (or a fork
 // that keeps its name), which holds the page and theme the coordination
 // session publishes. While no coordination is chosen, it is chosen for you.
-const ENGINE_REPO = "claude-agent-station";
+// Its former name, claude-agent-station, still counts, so older clones keep working.
+const ENGINE_REPOS = ["agent-station", "claude-agent-station"];
 const recommendedCoordination = () => {
-  const row = cfgForm.repos.find(r => !isGroupRemote(r.remote) && normalizeRemote(r.remote).split("/").pop() === ENGINE_REPO);
+  const row = cfgForm.repos.find(r => !isGroupRemote(r.remote) && ENGINE_REPOS.includes(normalizeRemote(r.remote).split("/").pop()));
   return row ? rowKey(row) : "";
 };
 function suggestCoordination() {
@@ -2669,7 +2670,7 @@ function renderConfig() {
           return o;
         }))),
       el("label", { class: "field", for: "cfg-coordination" }, el("span", {}, tr("COORDINATION")), coordinationSelect())),
-    el("p", { class: "hint", text: tr("The coordination is the repo whose Claude Code session delivers the orders you approve; it has no room on the station. A clone of claude-agent-station, which holds this page, is the recommended one, and it is chosen for you once you add it. Keep a session open in it: after restarting Claude Code, or opening that session again, send it any message to wake it up, and the bridge shows the dispatcher running.") }),
+    el("p", { class: "hint", text: tr("The coordination is the repo whose Claude Code session delivers the orders you approve; it has no room on the station. A clone of agent-station, which holds this page, is the recommended one, and it is chosen for you once you add it. Keep a session open in it: after restarting Claude Code, or opening that session again, send it any message to wake it up, and the bridge shows the dispatcher running.") }),
     el("div", { class: "field" }, el("span", {}, tr("STATION REPOS")),
       el("p", { class: "hint", text: tr("One row per repo, with the remote of its origin (for example github.com/organization/repo). A remote ending in /* takes every repo of that group, each with its own room. The rooms are drawn in the order of this list: move them with ▲ and ▼. Each room's name, what its agent does and its look are in SETTINGS.") }),
       el("div", { class: "repo-head" }, el("span", { text: tr("REMOTE") }), el("span", { text: tr("DECK") }), el("span"), el("span", { text: tr("ORDER") }), el("span")),
@@ -3226,7 +3227,7 @@ const ES = {
   "(none)": "(ninguno)",
   "(choose a repo)": "(elige un repo)",
   "{repo} (recommended)": "{repo} (recomendado)",
-  "The coordination is the repo whose Claude Code session delivers the orders you approve; it has no room on the station. A clone of claude-agent-station, which holds this page, is the recommended one, and it is chosen for you once you add it. Keep a session open in it: after restarting Claude Code, or opening that session again, send it any message to wake it up, and the bridge shows the dispatcher running.": "La coordinación es el repo cuya sesión de Claude Code entrega las órdenes que apruebas; no tiene sala en la estación. Se recomienda un clon de claude-agent-station, que contiene esta página, y se elige solo al añadirlo. Mantén una sesión abierta en él: tras reiniciar Claude Code, o al volver a abrir esa sesión, escríbele cualquier cosa para despertarla, y el puente mostrará el despachador activo.",
+  "The coordination is the repo whose Claude Code session delivers the orders you approve; it has no room on the station. A clone of agent-station, which holds this page, is the recommended one, and it is chosen for you once you add it. Keep a session open in it: after restarting Claude Code, or opening that session again, send it any message to wake it up, and the bridge shows the dispatcher running.": "La coordinación es el repo cuya sesión de Claude Code entrega las órdenes que apruebas; no tiene sala en la estación. Se recomienda un clon de agent-station, que contiene esta página, y se elige solo al añadirlo. Mantén una sesión abierta en él: tras reiniciar Claude Code, o al volver a abrir esa sesión, escríbele cualquier cosa para despertarla, y el puente mostrará el despachador activo.",
   "This repo's session delivers the orders; it has no room": "La sesión de este repo entrega las órdenes; no tiene sala",
   "Bridge · no dispatcher, orders wait: open a Claude Code session in {repo} and send it any message": "Puente de mando · sin despachador, las órdenes esperan: abre una sesión de Claude Code en {repo} y escríbele cualquier cosa",
   "Bridge · no coordination repo: choose one in CONFIGURE": "Puente de mando · sin repo de coordinación: elige uno en CONFIGURAR",

@@ -1,21 +1,21 @@
 ---
 name: setup
-description: Create a new agent station from a clone of claude-agent-station - publish its page as a claude.ai artifact with its database, record its alias, add its URL to this plugin's stations option and open it. Use when the user asks to set up, create or install a station.
+description: Create a new agent station from a clone of agent-station - publish its page as a claude.ai artifact with its database, record its alias, add its URL to this plugin's stations option and open it. Use when the user asks to set up, create or install a station.
 ---
 
 # Set up an agent station
 
-Create the user's station from the clone of claude-agent-station this session runs in. Explain each
+Create the user's station from the clone of agent-station this session runs in. Explain each
 step to the user in one line as you go, and ask before anything they have not asked for. The user
 approves each publish and each write as usual.
 
 ## 1. Check where you are
 
-- The working directory must be a clone of claude-agent-station: it holds `page/office.html` and
+- The working directory must be a clone of agent-station: it holds `page/office.html` and
   `page/themes/space.js`. If it does not, tell the user to open this session in their clone (the
   one they will use as the coordination repo, next to their other repos) and stop.
 - Find this plugin's id with `claude plugin list`: the entry named `agent-station`, for example
-  `agent-station@claude-agent-station`. If there is more than one `agent-station`, tell the user
+  `agent-station@agent-station`. If there is more than one `agent-station`, tell the user
   that only one copy may be installed per computer and stop.
 
 ## 2. Ask two things

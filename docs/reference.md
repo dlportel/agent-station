@@ -227,5 +227,5 @@ available:
    document `config/departments`. The plugin then recognises the station under both URLs.
 
 3. **Point the plugin at it.** Set the station's URL in the plugin's `stations` option (several
-   stations are separated by `;`), with `/plugin configure agent-station@claude-agent-station`, and
+   stations are separated by `;`), with `/plugin configure agent-station@agent-station`, and
    run `/reload-plugins` in the sessions you have open.

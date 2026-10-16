@@ -1,4 +1,4 @@
-# claude-agent-station
+# Agent Station
 
 A control room for running several Claude Code agents across your repos. It shows which session
 is working, which one is waiting for your permission and which one has gone quiet; it lets you
@@ -16,8 +16,8 @@ arm when it needs you, strolling around when it is idle.
 The station is a [claude.ai](https://claude.ai) artifact with its own database, and a Claude Code
 plugin reports every session to it. Nothing runs on a server of yours.
 
-**[Try the live demo](https://dlportel.github.io/claude-agent-station/demo/)**: the real station
-page with sample data, nothing to install ([in Spanish](https://dlportel.github.io/claude-agent-station/demo/?lang=es)).
+**[Try the live demo](https://dlportel.github.io/agent-station/demo/)**: the real station
+page with sample data, nothing to install ([in Spanish](https://dlportel.github.io/agent-station/demo/?lang=es)).
 
 ![The station at work: a robot's card, a proposal between rooms approved, and an order sent](docs/images/demo.gif)
 
@@ -80,7 +80,7 @@ its session does nothing but run the station. Clone it next to your other repos,
 coordination session looks for the station's repos in the folders beside it:
 
 ```
-git clone https://github.com/dlportel/claude-agent-station.git
+git clone https://github.com/dlportel/agent-station.git
 ```
 
 The marketplace's own copy, which Claude Code keeps under `~/.claude/plugins/`, is not beside your
@@ -89,8 +89,8 @@ repos, so it cannot be the coordination.
 1. **Install the plugin** from this repo's marketplace:
 
    ```
-   claude plugin marketplace add dlportel/claude-agent-station
-   claude plugin install agent-station@claude-agent-station --scope user
+   claude plugin marketplace add dlportel/agent-station
+   claude plugin install agent-station@agent-station --scope user
    ```
 
 2. **Set up the station.** Open a Claude Code session in your clone and run `/agent-station:setup`.
@@ -101,7 +101,7 @@ repos, so it cannot be the coordination.
 
 3. **Configure it.** Open the station. A station with no repos opens its configuration panel
    (CONFIGURE, or CONFIGURAR in Spanish). Add your repos by their origin remote, the coordination
-   repo among them. A clone of `claude-agent-station` is chosen as COORDINATION by itself; for any
+   repo among them. A clone of `agent-station` is chosen as COORDINATION by itself; for any
    other repo, choose it there. Its row then shows COORDINATION instead of a deck. Choose the
    language and save.
 
@@ -227,7 +227,7 @@ to the page or the space theme, republish the page to each station with `page/th
 as `themes/space.js`, passing the station's current title again: the page has no `<title>` of its
 own, so a publish without one renames the artifact.
 
-The [live demo](https://dlportel.github.io/claude-agent-station/demo/) loads `page/office.html` and
+The [live demo](https://dlportel.github.io/agent-station/demo/) loads `page/office.html` and
 its theme straight from this repo, so it shows every change to `main` on its own. Only
 `demo/data.js`, which stands in for the station's database, is separate: after changing how the
 page reads or writes its data, open the demo locally (serve the repo, for example with
@@ -255,7 +255,7 @@ guard works and how orders travel.
 
 ## Questions and bug reports
 
-Open an [issue](https://github.com/dlportel/claude-agent-station/issues) for a bug, a question or
+Open an [issue](https://github.com/dlportel/agent-station/issues) for a bug, a question or
 an idea. A security problem is reported privately instead, as [SECURITY.md](SECURITY.md) explains.
 
 ## License
