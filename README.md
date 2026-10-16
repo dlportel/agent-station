@@ -93,43 +93,25 @@ repos, so it cannot be the coordination.
    claude plugin install agent-station@claude-agent-station --scope user
    ```
 
-2. **Publish the station.** In a Claude Code session, ask Claude to publish `page/office.html` from
-   this repo as a new artifact, titled with your station's name, with `page/themes/space.js` as the
-   supporting file `themes/space.js`, and with the `db` capability and owner-only rules:
+2. **Set up the station.** Open a Claude Code session in your clone and run `/agent-station:setup`.
+   Claude asks for the station's name and language, publishes the station page as a claude.ai
+   artifact with its database, records its alias, adds its URL to the plugin's `stations` option
+   and opens it. Then run `/reload-plugins` in the sessions you have open. To do these steps by
+   hand, see [Manual setup](docs/reference.md#manual-setup).
 
-   ```json
-   { "db": { "rules": [
-     { "path": "sessions", "read": "owner", "write": "owner" },
-     { "path": "orders", "read": "owner", "write": "owner" },
-     { "path": "config", "read": "owner", "write": "owner" },
-     { "path": "dispatchers", "read": "owner", "write": "owner" }
-   ] } }
-   ```
-
-   To start from a template, publish your own `seed.json` next to it (see `examples/seed.json`).
-
-3. **Record the station's aliases.** The same artifact also answers at
-   `https://claude.ai/code/artifact/<uuid>`. Ask Claude to read the published artifact to learn that
-   uuid and to write `{ "aliases": ["https://claude.ai/code/artifact/<uuid>"] }` into the database
-   document `config/departments`. The plugin then recognises the station under both URLs.
-
-4. **Point the plugin at it.** Set the station's URL in the plugin's `stations` option (several
-   stations are separated by `;`), with `/plugin configure agent-station@claude-agent-station`, and
-   run `/reload-plugins` in the sessions you have open.
-
-5. **Configure it.** Open the station. A station with no repos opens its configuration panel
+3. **Configure it.** Open the station. A station with no repos opens its configuration panel
    (CONFIGURE, or CONFIGURAR in Spanish). Add your repos by their origin remote, the coordination
    repo among them. A clone of `claude-agent-station` is chosen as COORDINATION by itself; for any
    other repo, choose it there. Its row then shows COORDINATION instead of a deck. Choose the
    language and save.
 
-6. **Open the coordination session.** Open a Claude Code session in the coordination repo and
-   send it any message: that starts the dispatcher, and the station's bridge shows "dispatcher
+4. **Start the coordination session.** The session in your clone, where you ran the setup, is the
+   coordination session: after `/reload-plugins`, send it any message. That starts the dispatcher, and the station's bridge shows "dispatcher
    running on" your machine. Keep that session open. Claude Code starts a session's plugins only
    when the session itself starts, so after you restart Claude Code, or reopen that session, send
    it a message again; until then the bridge says that orders wait.
 
-7. **Open sessions in your other repos.** Each one appears as a robot in its room once it starts,
+5. **Open sessions in your other repos.** Each one appears as a robot in its room once it starts,
    and gets the station's map with its first message.
 
 ## Using the station

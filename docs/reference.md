@@ -200,3 +200,32 @@ answered), and the dispatcher scans the repos on its machine once, when it takes
 on; sessions already open keep their decision until `/reload-plugins` or a restart. A repo cloned
 away from the coordination repo still reports its sessions, but the dispatcher neither reads its
 agents nor opens new sessions in it.
+
+## Manual setup
+
+What `/agent-station:setup` does, step by step, for doing it by hand or when the command is not
+available:
+
+1. **Publish the station.** In a Claude Code session, ask Claude to publish `page/office.html` from
+   this repo as a new artifact, titled with your station's name, with `page/themes/space.js` as the
+   supporting file `themes/space.js`, and with the `db` capability and owner-only rules:
+
+   ```json
+   { "db": { "rules": [
+     { "path": "sessions", "read": "owner", "write": "owner" },
+     { "path": "orders", "read": "owner", "write": "owner" },
+     { "path": "config", "read": "owner", "write": "owner" },
+     { "path": "dispatchers", "read": "owner", "write": "owner" }
+   ] } }
+   ```
+
+   To start from a template, publish your own `seed.json` next to it (see `examples/seed.json`).
+
+2. **Record the station's aliases.** The same artifact also answers at
+   `https://claude.ai/code/artifact/<uuid>`. Ask Claude to read the published artifact to learn that
+   uuid and to write `{ "aliases": ["https://claude.ai/code/artifact/<uuid>"] }` into the database
+   document `config/departments`. The plugin then recognises the station under both URLs.
+
+3. **Point the plugin at it.** Set the station's URL in the plugin's `stations` option (several
+   stations are separated by `;`), with `/plugin configure agent-station@claude-agent-station`, and
+   run `/reload-plugins` in the sessions you have open.
