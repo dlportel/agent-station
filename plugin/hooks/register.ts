@@ -266,8 +266,8 @@ export const register: Register = (on, options) => {
   function claimOrderMark(e: any) {
     const mark = readOrderMark(e.text)
     if (!mark || !station || !ownFolder) return e
-    if (isReporting) updateReport({ fromOrder: mark.orderId }, true)
-    else report = { ...report, fromOrder: mark.orderId }
+    if (isReporting) updateReport({ fromOrder: mark.claim }, true)
+    else report = { ...report, fromOrder: mark.claim }
     if (ownFolder === mark.folder) return e
     const note = tx(station.language, 'This message is the station order {order}, which is for the room {room}, not for this session (room {own}). Do not carry it out: tell the user that it belongs to {room}, and that its card has to be opened as a new session there.', { order: mark.orderId, room: mark.folder, own: ownFolder })
     return { ...e, context: [...(e.context ?? []), note] }

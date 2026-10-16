@@ -2274,20 +2274,21 @@ function openOrderDetail(id, isEditing = false) {
   const o = orders.find(x => x.id === id); if (!o) return;
   if (isEditing && o.status !== "proposed") isEditing = false;
   const meta = OST[o.status] || { label: o.status, color: "#c9cfd9" };
-  const MODE = { any: tr("A free one or, if there is none, a new one"), existing: o.sessionId ? tr("A particular session") : tr("Only an open free one"), new: tr("A new session") };
   const rows = [
     [tr("State"), el("span", { class: "dotlbl", style: { color: meta.color } }, el("i", { style: { background: meta.color } }), meta.label)],
     ["To", deptOf(o.folder).name + (o.agent ? ` · ${tr("agent")} ${o.agent}` : "")],
-    ["Destination", o.replyTo ? tr("The session that asked for it (\"{title}\")", { title: o.replyTo.title || o.replyTo.sessionId }) + (o.mode === "existing" ? "" : tr("; if it is gone, a free one or a new one")) : MODE[o.mode] || o.mode],
+    ["Destination", destinationOf(o)],
     ["Model", o.model ? modelLabel(o.model) : tr("The session's own")],
     ["Delivered to", o.deliveredTitle || null],
     ["Proposed by", o.proposedBy ? `${o.proposedBy.title || deptOf(o.proposedBy.folder).name} (${deptOf(o.proposedBy.folder).name})` : null],
     ["Reason", o.reason || null],
     ["Handoff", o.handoff?.number ? `#${o.handoff.number}` : null],
+    ["Resent", o.attempt > 1 ? tr(o.attempt === 2 ? "Once, on {when}" : "{n} times, the last on {when}", { n: o.attempt - 1, when: when(o.resentAt) || "?" }) : null],
     ["Created", when(o.createdAt)], ["Edited", when(o.editedAt)], ["Approved", when(o.approvedAt)], ["Picked up", when(o.claimedAt)], ["Delivered", when(o.deliveredAt)],
     ["Note", o.note || null],
   ].filter(([, v]) => v);
   const canDiscard = ["pending", "needs_click", "failed"].includes(o.status);
+  const canResend = RESENDABLE.includes(o.status);
   // Where the order is now: the session that received it; while it waits for
   // your click, the coordination session holding its card; before that, the
   // session it is meant for. And the session that proposed it.
@@ -2304,10 +2305,11 @@ function openOrderDetail(id, isEditing = false) {
       el("button", { class: "btn btn-dark", type: "button", onclick: () => saveOrderText(o.id, editor.value, false) }, tr("SAVE")),
       el("button", { class: "btn btn-ghost", type: "button", onclick: () => openOrderDetail(o.id) }, tr("CANCEL"))) : null,
     el("dl", { class: "facts" }, rows.flatMap(([k, v]) => [el("dt", { text: tr(k) }), typeof v === "string" ? el("dd", { text: v }) : el("dd", {}, v)])),
-    !isEditing && (o.status === "proposed" || canDiscard || openAt || openAsker) ? el("div", { style: { display: "flex", flexWrap: "wrap", gap: "10px" } },
+    !isEditing && (o.status === "proposed" || canDiscard || canResend || openAt || openAsker) ? el("div", { style: { display: "flex", flexWrap: "wrap", gap: "10px" } },
       o.status === "proposed" ? el("button", { class: "btn btn-cyan", type: "button", onclick: () => { decideProposal(o.id, true); closeModal(); } }, tr("APPROVE")) : null,
       o.status === "proposed" ? el("button", { class: "btn btn-dark", type: "button", onclick: () => openOrderDetail(o.id, true) }, tr("EDIT")) : null,
       o.status === "proposed" ? el("button", { class: "btn btn-ghost", type: "button", onclick: () => { decideProposal(o.id, false); closeModal(); } }, tr("REJECT")) : null,
+      canResend ? el("button", { class: "btn btn-dark", type: "button", onclick: () => openResend(o.id) }, tr("RESEND")) : null,
       canDiscard ? el("button", { class: "btn btn-ghost", type: "button", onclick: () => { discardOrder(o.id); closeModal(); } }, tr("DISCARD")) : null,
       // The sessions open at the other end of the row, away from the decisions.
       openAt || openAsker ? el("span", { style: { display: "flex", flexWrap: "wrap", gap: "10px", marginLeft: "auto" } },
@@ -2315,6 +2317,53 @@ function openOrderDetail(id, isEditing = false) {
         openAsker ? linkBtn(openAsker, tr("OPEN THE ONE ASKING")) : null) : null) : null);
   openInfo(card);
   if (editor) { editor.focus(); editor.setSelectionRange(editor.value.length, editor.value.length); }
+}
+function destinationOf(o) {
+  if (o.replyTo) return tr("The session that asked for it (\"{title}\")", { title: o.replyTo.title || o.replyTo.sessionId }) + (o.mode === "existing" ? "" : tr("; if it is gone, a free one or a new one"));
+  const MODE = { any: tr("A free one or, if there is none, a new one"), existing: o.sessionId ? tr("A particular session") : tr("Only an open free one"), new: tr("A new session") };
+  return MODE[o.mode] || o.mode;
+}
+// An order that got stuck or went wrong goes back to the queue as it was, or
+// with another destination, and the dispatcher handles it as a new one. Its
+// attempt number goes into a new-session card's mark, so the card of an
+// earlier attempt never takes it. A delivered order may have been done, so the
+// dialog says where it went before it is sent again.
+const RESENDABLE = ["needs_click", "failed", "delivered"];
+const RESEND_DESTS = { any: { mode: "any", label: "A free one or, if there is none, a new one" }, free: { mode: "existing", label: "Only an open free one" }, new: { mode: "new", label: "A new session" } };
+// "The same" is offered only for an order tied to a session; any other one
+// starts on the option that matches its mode.
+function openResend(id, dest) {
+  const o = orders.find(x => x.id === id); if (!o) return;
+  const isTied = !!(o.sessionId || o.replyTo);
+  dest ??= isTied ? "same" : Object.keys(RESEND_DESTS).find(key => RESEND_DESTS[key].mode === o.mode) || "any";
+  const options = (isTied ? [["same", `${tr("The same")}: ${destinationOf(o)}`]] : []).concat(Object.entries(RESEND_DESTS).map(([key, d]) => [key, tr(d.label)]));
+  openInfo(el("div", { class: "card wide", role: "dialog", "aria-label": tr("Resend order") },
+    el("div", { class: "card-head" }, el("span", { class: "box-title" }, tr("RESEND ORDER")), el("button", { class: "btn btn-ghost", type: "button", onclick: () => openOrderDetail(id) }, tr("CANCEL"))),
+    el("div", { class: "detail-text", text: o.text || "" }),
+    o.status === "delivered" ? el("div", { class: "err", text: tr("It was delivered to \"{title}\" on {when}. It may already be done: if you resend it, it will be done twice.", { title: o.deliveredTitle || o.deliveredTo || "?", when: when(o.deliveredAt) || "?" }) }) : null,
+    el("div", { class: "field" }, el("span", {}, tr("DESTINATION")),
+      options.map(([key, label]) => el("button", { class: "dest", type: "button", "aria-pressed": String(dest === key), onclick: () => openResend(id, key) }, el("span", { class: "radio" }), label))),
+    el("div", { style: { display: "flex", flexWrap: "wrap", gap: "10px" } },
+      el("button", { class: "btn btn-cyan", type: "button", onclick: () => resendOrder(id, dest) }, tr(o.status === "delivered" ? "RESEND ANYWAY" : "RESEND")))));
+}
+async function resendOrder(id, dest) {
+  const o = orders.find(x => x.id === id);
+  if (!db || !o) return;
+  if (!RESENDABLE.includes(o.status)) { toast(tr("This order can no longer be resent.")); return openOrderDetail(id); }
+  const now = Date.now();
+  const target = RESEND_DESTS[dest];
+  try {
+    await db.doc(`orders/${id}`).update({
+      status: "pending", attempt: (Number(o.attempt) || 1) + 1, resentAt: now, updatedAt: now,
+      deliveredTo: null, deliveredTitle: null, deliveredAt: null, spawnedAt: null, claimedBy: null, claimedAt: null, note: null,
+      // Another destination drops the session the order was meant for.
+      ...(target ? { mode: target.mode, sessionId: null, machine: null, replyTo: null } : {}),
+    });
+    closeModal();
+    toast(tr("Order back in the queue. The dispatcher picks it up in less than a minute."));
+  } catch (error) {
+    toast(tr("The order could not be resent ({code}). Try again.", { code: error?.code || "error" }));
+  }
 }
 // The longest text an order takes, the same as propose_order's: an order is
 // never cut, a longer one is refused whole.
@@ -3027,6 +3076,18 @@ const ES = {
   "SEE ALL": "VER COMPLETA",
   "EDIT": "EDITAR",
   "DISCARD": "DESCARTAR",
+  "RESEND": "REENVIAR",
+  "RESEND ANYWAY": "REENVIAR DE TODOS MODOS",
+  "RESEND ORDER": "REENVIAR ORDEN",
+  "Resend order": "Reenviar orden",
+  "Resent": "Reenviada",
+  "Once, on {when}": "Una vez, el {when}",
+  "{n} times, the last on {when}": "{n} veces, la última el {when}",
+  "The same": "El mismo",
+  "It was delivered to \"{title}\" on {when}. It may already be done: if you resend it, it will be done twice.": "Se entregó a «{title}» el {when}. Puede que ya esté hecha: si la reenvías, se hará dos veces.",
+  "This order can no longer be resent.": "Esta orden ya no se puede reenviar.",
+  "Order back in the queue. The dispatcher picks it up in less than a minute.": "Orden de vuelta en la cola. El despachador la recoge en menos de un minuto.",
+  "The order could not be resent ({code}). Try again.": "No se pudo reenviar la orden ({code}). Inténtalo de nuevo.",
   "CLOSE": "CERRAR",
   "LEGEND": "LEYENDA",
   "STATES": "ESTADOS",

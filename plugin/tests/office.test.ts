@@ -955,6 +955,10 @@ test('a session records the order its card carries, and is warned when it is for
 
   expect(written.some(d => d.fromOrder === 'n1')).toBe(true)
   expect(written.some(d => d.fromOrder === 'n2')).toBe(true)
+  const resent: any = await ($ as any).prompt.submit({ text: 'Remove the TLS keys.\n\n[agent-station order n1#3 for app]' })
+  await clock.advance(30_000)
+  expect(written.some(d => d.fromOrder === 'n1#3')).toBe(true)
+  expect(String((resent.context ?? []).join('\n'))).not.toContain('Do not carry it out')
   expect(String((own.context ?? []).join('\n'))).not.toContain('Do not carry it out')
   expect(String((other.context ?? []).join('\n'))).toContain('which is for the room legal, not for this session (room app)')
 })

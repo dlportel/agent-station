@@ -1,5 +1,5 @@
 import { callOffice, mcpText, parseDocs, type EngineIo, type OfficeDoc } from './office'
-import { folderForRemote, joinPath, orderMark, parentOf, readMainRepoTop, readOriginRemote, type Station } from './station'
+import { folderForRemote, joinPath, orderClaim, orderMark, parentOf, readMainRepoTop, readOriginRemote, type Station } from './station'
 import { tx } from './locale-es'
 
 // Delivers the orders written in the station to this machine's sessions. One
@@ -406,7 +406,7 @@ async function prepareNewSession(context: DispatcherContext, order: OfficeDoc) {
     // The mark lets the session the card opens claim this order, and only it.
     prompt: `${composeOrderMessage(context, order)}
 
-${orderMark(order.id, folder)}`,
+${orderMark(order.id, folder, order.data.attempt)}`,
     cwd: local.path,
   })
   await updateOrder(context, order, reply.isOk
@@ -416,9 +416,10 @@ ${orderMark(order.id, folder)}`,
 
 // A new-session order goes to the session its card opened: the one that found
 // the order's mark in its first message and recorded it as fromOrder. Never to
-// a session that merely started in the room meanwhile. A card run in a session
-// of another room (such as "do it here" in the coordination session) fails the
-// order, since nobody in its room is doing it.
+// a session that merely started in the room meanwhile, nor to the card of an
+// earlier attempt of a resent order. A card run in a session of another room
+// (such as "do it here" in the coordination session) fails the order, since
+// nobody in its room is doing it.
 async function completeSpawnedOrders(context: DispatcherContext, spawned: OfficeDoc[]) {
   const waiting = spawned.filter(order => order.data.claimedBy === context.machine)
   for (const order of waiting) {
@@ -426,7 +427,7 @@ async function completeSpawnedOrders(context: DispatcherContext, spawned: Office
     const reply = await callOffice(context.io, context.officeUrl, {
       action: 'query',
       collection: 'sessions',
-      query: { where: [['fromOrder', '==', order.id]], limit: 10 },
+      query: { where: [['fromOrder', '==', orderClaim(order.id, order.data.attempt)]], limit: 10 },
     })
     if (!reply.isOk) continue
     // Only an open session of this machine counts; two that claim the same

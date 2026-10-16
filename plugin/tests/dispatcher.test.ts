@@ -265,6 +265,31 @@ test('a spawned order goes to the session its card opened', { options }, async (
   await clock.advance(60_000)
 })
 
+test('a resent order takes only the card of its current attempt', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls, [{ sessionId: 'local_old_card', isArchived: false }, { sessionId: 'local_new_card', isArchived: false }])
+  stubGit(on)
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('orders', 'r1', { text: 'Rotate the keys', folder: 'app', mode: 'new', status: 'pending', attempt: 2, createdAt: Date.now() })
+  db.seed('sessions', 'local_old_card', { folder: 'app', machine: 'TESTPC', state: 'working', title: 'First attempt', fromOrder: 'r1' })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  expect(String(mcpCalls.find(c => c.tool === 'spawn_task')?.args?.prompt)).toContain('[agent-station order r1#2 for app]')
+  expect(db.read('orders', 'r1')?.status).toBe('needs_click')
+  await clock.advance(60_000)
+  expect(db.read('orders', 'r1')?.status).toBe('needs_click')
+
+  db.seed('sessions', 'local_new_card', { folder: 'app', machine: 'TESTPC', state: 'working', title: 'Second attempt', fromOrder: 'r1#2' })
+  await clock.advance(60_000)
+  expect(db.read('orders', 'r1')?.status).toBe('delivered')
+  expect(db.read('orders', 'r1')?.deliveredTo).toBe('local_new_card')
+  await clock.advance(60_000)
+})
+
 test('a session of the same room that opens after the card does not take the order', { options }, async ($, on) => {
   const clock = mock.clock(on)
   const mcpCalls: any[] = []

@@ -149,14 +149,20 @@ export function coordinationPeerNote(proposeTool: string, language: Lang = 'en',
 // opens (and only it) can be matched to the order: the order's id and the room
 // it is for. Kept in English and in this one form, whatever the station's
 // language, since the plugin reads it back.
-export function orderMark(orderId: string, folder: string): string {
-  return `[agent-station order ${orderId} for ${folder}]`
+// A resent order's mark carries its attempt (`<id>#2`), so the card of an
+// earlier attempt never claims the current one. The first attempt has none.
+export function orderClaim(orderId: string, attempt: unknown): string {
+  const n = Number(attempt)
+  return Number.isInteger(n) && n > 1 ? `${orderId}#${n}` : orderId
+}
+export function orderMark(orderId: string, folder: string, attempt?: unknown): string {
+  return `[agent-station order ${orderClaim(orderId, attempt)} for ${folder}]`
 }
 // Only at the very end of the message, where the dispatcher writes it, so a
 // mark quoted inside an order's text does not count.
-export function readOrderMark(text: unknown): { orderId: string; folder: string } | undefined {
-  const match = /\[agent-station order ([A-Za-z0-9_.:-]{1,200}) for ([A-Za-z0-9_.-]{1,200})\]\s*$/.exec(String(text ?? ''))
-  return match ? { orderId: match[1], folder: match[2] } : undefined
+export function readOrderMark(text: unknown): { orderId: string; claim: string; folder: string } | undefined {
+  const match = /\[agent-station order ([A-Za-z0-9_.:-]{1,200})(?:#(\d{1,6}))? for ([A-Za-z0-9_.-]{1,200})\]\s*$/.exec(String(text ?? ''))
+  return match ? { orderId: match[1], claim: orderClaim(match[1], match[2]), folder: match[3] } : undefined
 }
 
 // A message to another Claude Code session of the app: SendMessage to a

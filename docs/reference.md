@@ -113,7 +113,7 @@ owner, and the sessions running under that same account, can read or write a sta
 | Who | Reads | Writes |
 |---|---|---|
 | The plugin, in each session | `config/departments` of every station in `stations` | Its own document in `sessions`, in the station it belongs to |
-| The page, opened by the owner | Everything | Orders (create, edit a proposal's text, approve, reject, discard) and `config/departments` |
+| The page, opened by the owner | Everything | Orders (create, edit a proposal's text, approve, reject, discard, resend) and `config/departments` |
 | Agents | May read the station | Nothing directly: they propose orders with `mcp__agent-station__propose_order`, which wait for approval on the page |
 | A coordination session | Everything | Orders and `config/departments` of its own station, and republishing its own station page, asking the user each time |
 | The dispatcher (inside a coordination session) | Orders and sessions | Order status, `config/agents`, `config/handoffs`, `config/models` and its lease in `dispatchers`; it also closes the session documents of sessions the app no longer has, deletes closed ones after 7 days and finished orders after 30 |
@@ -169,6 +169,14 @@ same machine), never to another one that happens to start in the room meanwhile.
 claim the same order, it fails rather than going to either. If the card is run in a
 session of another room (for example with "do it here" in the coordination session), that session
 is told the order is not for it and not to carry it out, and the order fails with a note saying so.
+
+An order that is waiting for your click, failed or was delivered can be resent from its detail on
+the page, as it is or with another destination. It goes back to the queue with its attempt number
+raised and the trace of its last delivery cleared, and the dispatcher handles it as a new order.
+Before resending a delivered order the page says which session got it, since it may already be
+done. From the second attempt on, the card's mark carries the attempt
+(`[agent-station order <id>#<attempt> for <folder>]`) and the dispatcher only takes the session
+that recorded that attempt, so the card of an earlier attempt, opened later, never takes the order.
 An order for one particular session goes to the machine of that session; any other order
 is taken by the first dispatcher that sees it, on whichever machine, so with several machines it
 may open a new session on one even when another has an idle session of that department.
@@ -190,6 +198,11 @@ user in the session itself. Every order adds that the coordination session only 
 and is never asked to forward anything. A message from another session that reaches the
 coordination session carries the same reminder as context, so it points the sender to
 `propose_order` instead of relaying; the user's `/coordinator` notices are still for it.
+
+The desktop app replaces every at sign in a message between sessions with the full-width one
+(U+FF20), so that an `@` never attaches a file in the session that receives it; a new session's
+card keeps it. An order delivered to an open session whose text has an at sign ends with a note
+saying so, and that code, SQL, email addresses and paths need the ordinary one.
 
 The dispatcher finds the station's repos on its machine next to the coordination repo: every
 sibling folder whose origin remote is in `repos`. It reads their `.claude/agents` into
