@@ -376,9 +376,10 @@ async function deliverToSession(context: DispatcherContext, order: OfficeDoc, se
       return true
     }
   }
+  const message = composeOrderMessage(context, order)
   const reply = await callMcpSafely(context, 'ccd_session_mgmt', 'send_message', {
     session_id: session.id,
-    message: composeOrderMessage(context, order),
+    message: message.includes('@') ? `${message}\n\n${atSignNote(context)}` : message,
   })
   if (!reply.isOk || !/delivered|queued/i.test(reply.text)) return reply.text.slice(0, 300) || 'no answer'
   const queued = /queued/i.test(reply.text) ? say(context, 'Queued: the session was finishing something else.') : ''
@@ -548,6 +549,14 @@ export function composeOrderMessage(context: Pick<DispatcherContext, 'station'>,
     : say('When you finish, {answer}', { answer })
   const header = say('Order from the room "{room}" (folder `{folder}`), asked by {session} and sent from {station} with the user\'s approval:', { room, folder: askerFolder, session, station })
   return `${header}\n\n${agent}${text}\n\n${howToAnswer} ${noRelay}`
+}
+
+// The Claude app replaces every at sign of a message between sessions with the
+// full-width one (U+FF20), so an @ never attaches a file in the receiving
+// session. A card keeps it. The note names both by code point because any at
+// sign written in it would be replaced too.
+function atSignNote(context: Pick<DispatcherContext, 'station'>): string {
+  return tx(context.station.language, 'The Claude app replaces every at sign in this message with the full-width ＠ (U+FF20). In code, SQL, email addresses or paths, write the ordinary at sign (U+0040).')
 }
 
 function sanitizeId(id: string): string {

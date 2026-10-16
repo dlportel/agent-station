@@ -32,7 +32,8 @@ const ES: Record<string, string> = {
   'the station': 'la estación',
   'The coordination session only hands orders out: do not write to it or ask it to forward anything.': 'La sesión de coordinación solo reparte las órdenes: no le escribas ni le pidas que reenvíe nada.',
   'Order sent by the user from {station}:': 'Orden enviada por el usuario desde {station}:',
-  'When you finish, tell the user the result in this same session.': 'Cuando termines, cuéntale el resultado al usuario en esta misma sesión.',
+  'The Claude app replaces every at sign in this message with the full-width ＠ (U+FF20). In code, SQL, email addresses or paths, write the ordinary at sign (U+0040).': 'La app de Claude cambia todas las arrobas de este mensaje por la arroba de ancho completo ＠ (U+FF20). En código, SQL, direcciones de correo o rutas, escribe la arroba normal (U+0040).',
+  'When you finish, tell the user the result in this same session.':'Cuando termines, cuéntale el resultado al usuario en esta misma sesión.',
   'its session "{title}"': 'su sesión «{title}»',
   'one of its sessions': 'una de sus sesiones',
   "return the result with the station's `propose_order` tool and `folder: \"{folder}\"`: the station delivers it to that same session once the user approves it, without you naming it.":

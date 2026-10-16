@@ -179,6 +179,25 @@ test('an order of the user\'s is answered in the session itself, never through t
   expect(message).toContain('tell the user the result in this same session')
   expect(message).toContain('do not write to it or ask it to forward anything')
   expect(message).not.toContain('propose_order')
+  expect(message).not.toContain('U+FF20')
+  await clock.advance(60_000)
+})
+
+test('a delivered order with an at sign warns that the app replaces it', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls, [{ sessionId: 'local_legal', isArchived: false }])
+  stubGit(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('sessions', 'local_legal', { folder: 'legal', machine: 'TESTPC', state: 'idle', lastEventAt: Date.now(), title: 'Legal' })
+  db.seed('orders', 'u2', { text: 'Write to legal@example.com', folder: 'legal', mode: 'any', status: 'pending', createdAt: Date.now() })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  const message = String(mcpCalls.find(c => c.tool === 'send_message' && c.args?.session_id === 'local_legal')?.args?.message)
+  expect(message).toContain('Write to legal@example.com')
+  expect(message).toContain('full-width ＠ (U+FF20)')
   await clock.advance(60_000)
 })
 
