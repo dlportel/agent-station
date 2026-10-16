@@ -163,8 +163,10 @@ and sends it the order as a message. A new session cannot be created from a plug
 dispatcher leaves a task card in the coordination session and the order shows as waiting for your
 click, first among the pending orders on the bridge, where it can also be discarded. The card's
 message ends with the order's mark, `[agent-station order <id> for <folder>]`. The session the card
-opens records that order as its `fromOrder`, and the dispatcher delivers the order to that session
-only, never to another one that happens to start in the room meanwhile. If the card is run in a
+opens finds the mark at the very end of its first message and records that order as its
+`fromOrder`, and the dispatcher delivers the order to that session only (an open session of the
+same machine), never to another one that happens to start in the room meanwhile. If two sessions
+claim the same order, it fails rather than going to either. If the card is run in a
 session of another room (for example with "do it here" in the coordination session), that session
 is told the order is not for it and not to carry it out, and the order fails with a note saying so.
 An order for one particular session goes to the machine of that session; any other order

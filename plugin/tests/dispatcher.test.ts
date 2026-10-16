@@ -231,7 +231,7 @@ function seedSpawnedOrder(db: any) {
 test('a spawned order goes to the session its card opened', { options }, async ($, on) => {
   const clock = mock.clock(on)
   const mcpCalls: any[] = []
-  stubEngine(on, mcpCalls)
+  stubEngine(on, mcpCalls, [{ sessionId: 'local_other', isArchived: false }, { sessionId: 'local_card', isArchived: false }])
   stubGit(on)
   const db = fakeOfficeDatabase(on)
   const spawnedAt = seedSpawnedOrder(db)
@@ -249,7 +249,7 @@ test('a spawned order goes to the session its card opened', { options }, async (
 test('a session of the same room that opens after the card does not take the order', { options }, async ($, on) => {
   const clock = mock.clock(on)
   const mcpCalls: any[] = []
-  stubEngine(on, mcpCalls)
+  stubEngine(on, mcpCalls, [{ sessionId: 'local_other', isArchived: false }])
   stubGit(on)
   const db = fakeOfficeDatabase(on)
   const spawnedAt = seedSpawnedOrder(db)
@@ -262,10 +262,28 @@ test('a session of the same room that opens after the card does not take the ord
   await clock.advance(60_000)
 })
 
+test('two sessions that claim the same order leave it failed, not delivered to either', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls, [{ sessionId: 'local_card', isArchived: false }, { sessionId: 'local_copy', isArchived: false }])
+  stubGit(on)
+  const db = fakeOfficeDatabase(on)
+  const spawnedAt = seedSpawnedOrder(db)
+  db.seed('sessions', 'local_card', { folder: 'app', machine: 'TESTPC', state: 'working', startedAt: spawnedAt + 5_000, title: 'TLS keys', fromOrder: 'n1' })
+  db.seed('sessions', 'local_copy', { folder: 'app', machine: 'TESTPC', state: 'working', startedAt: spawnedAt + 9_000, title: 'Pasted mark', fromOrder: 'n1' })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  expect(db.read('orders', 'n1')?.status).toBe('failed')
+  expect(db.read('orders', 'n1')?.deliveredTo).toBeUndefined()
+  await clock.advance(60_000)
+})
+
 test('a card run in a session of another room fails the order instead of delivering it', { options }, async ($, on) => {
   const clock = mock.clock(on)
   const mcpCalls: any[] = []
-  stubEngine(on, mcpCalls)
+  stubEngine(on, mcpCalls, [{ sessionId: 'local_coordination', isArchived: false }])
   stubGit(on)
   const db = fakeOfficeDatabase(on)
   const spawnedAt = seedSpawnedOrder(db)

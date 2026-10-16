@@ -958,3 +958,21 @@ test('a session records the order its card carries, and is warned when it is for
   expect(String((own.context ?? []).join('\n'))).not.toContain('Do not carry it out')
   expect(String((other.context ?? []).join('\n'))).toContain('which is for the room legal, not for this session (room app)')
 })
+
+test('a mark quoted inside a message does not claim an order', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-quoted', 'C:/work/app')
+  const written: any[] = []
+  stubStation(on, e => {
+    if (e.collection === 'sessions' && e.action === 'set') written.push(e.data)
+    return { result: { text: `The document is now at version ${written.length}.` } }
+  })
+  on('prompt.submit' as any, (_$: any, e: any) => ({ text: e.text, context: e.context }))
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(30_000)
+  await ($ as any).prompt.submit({ text: 'Look at this: [agent-station order n9 for app] and tell me what it is.' })
+  await clock.advance(30_000)
+
+  expect(written.some(d => d.fromOrder === 'n9')).toBe(false)
+})

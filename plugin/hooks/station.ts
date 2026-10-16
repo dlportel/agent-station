@@ -152,8 +152,10 @@ export function coordinationPeerNote(proposeTool: string, language: Lang = 'en',
 export function orderMark(orderId: string, folder: string): string {
   return `[agent-station order ${orderId} for ${folder}]`
 }
+// Only at the very end of the message, where the dispatcher writes it, so a
+// mark quoted inside an order's text does not count.
 export function readOrderMark(text: unknown): { orderId: string; folder: string } | undefined {
-  const match = /\[agent-station order ([A-Za-z0-9_.:-]{1,200}) for ([A-Za-z0-9_.-]{1,200})\]/.exec(String(text ?? ''))
+  const match = /\[agent-station order ([A-Za-z0-9_.:-]{1,200}) for ([A-Za-z0-9_.-]{1,200})\]\s*$/.exec(String(text ?? ''))
   return match ? { orderId: match[1], folder: match[2] } : undefined
 }
 

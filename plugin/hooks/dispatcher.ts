@@ -428,8 +428,15 @@ async function completeSpawnedOrders(context: DispatcherContext, spawned: Office
       query: { where: [['fromOrder', '==', order.id]], limit: 10 },
     })
     if (!reply.isOk) continue
-    const session = parseDocs(reply.text)[0]
-    if (!session) continue
+    // Only an open session of this machine counts; two that claim the same
+    // order leave it unclear which one does the work.
+    const claims = parseDocs(reply.text).filter(s => s.data.machine === context.machine && s.data.state !== 'ended')
+    if (!claims.length) continue
+    if (claims.length > 1) {
+      await updateOrder(context, order, { status: 'failed', note: say(context, 'More than one session claims this order, so it is unclear which one is doing it. Give the order again and open its card as a new session.') })
+      continue
+    }
+    const session = claims[0]
     const folder = String(order.data.folder ?? '')
     if (session.data.folder !== folder) {
       await updateOrder(context, order, { status: 'failed', note: say(context, 'Its card was run in a session of {other}, not in {room}, so nobody in {room} is doing it. Give the order again and open its card as a new session.', { other: session.data.folder || '?', room: folder }) })
