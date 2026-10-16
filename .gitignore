@@ -1,3 +1,6 @@
 # IDE settings
 .idea/
 .vscode/
+
+# Private notes of a local clone, read by Claude Code
+CLAUDE.local.md
