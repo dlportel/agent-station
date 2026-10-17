@@ -58,7 +58,7 @@ body.spot-working .slot:not(.busy), body.spot-working .actor { opacity: .35; }
 .side .bridge { flex-direction: column; flex-wrap: nowrap; }
 .side .bridge > * { flex: none !important; min-width: 0; }
 .side .map, .side .orders-box, .side .queue { min-width: 0; }
-.side .order-row { grid-template-columns: 96px minmax(0, 1fr) 52px; align-items: start; border-top: 1px solid #2a3142; padding-top: 6px; }
+.side .order-row { grid-template-columns: 96px minmax(0, 1fr) auto; align-items: start; border-top: 1px solid #2a3142; padding-top: 6px; }
 .side .order-row .txt { white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .side .order-row .to { grid-column: 2 / span 2; grid-row: 2; }
 .side .proposal { grid-template-columns: minmax(0, 1fr); }
@@ -96,10 +96,13 @@ body.spot-working .slot:not(.busy), body.spot-working .actor { opacity: .35; }
 .proposal .to-chip { font-family: var(--font-pixel); font-weight: 400; font-size: 9px; letter-spacing: 1px; color: #1a1428; background: #c9a7ff; padding: 1px 6px; }
 .proposal .txt { font-size: 11.5px; line-height: 1.45; color: #c7bce0; border-left: 2px solid #4b3a6e; padding-left: 8px; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .proposal .meta { font-size: 10.5px; color: #8f82a8; }
+.proposal .when { white-space: nowrap; color: #d7c8f5; }
+.handoff-excerpt { margin: 0; font-size: 12px; line-height: 1.5; color: #b9c2d3; overflow-wrap: anywhere; }
 .proposal .ops { grid-column: 2; grid-row: 1 / span 4; display: flex; flex-wrap: wrap; gap: 6px; }
 .proposal .ops .view { display: flex; gap: 6px; margin-left: auto; }
-.order-row { display: grid; grid-template-columns: 110px minmax(0, 1fr) minmax(0, 200px) 70px; gap: 10px; align-items: center; font-size: 11px; }
+.order-row { display: grid; grid-template-columns: 110px minmax(0, 1fr) minmax(0, 200px) auto; gap: 10px; align-items: center; font-size: 11px; }
 .order-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.order-row > .when { overflow: visible; }
 .dotlbl { display: flex; gap: 6px; align-items: center; }
 .dotlbl i { width: 8px; height: 8px; flex: none; display: inline-block; }
 .box-title { font-family: var(--font-pixel); font-size: 10px; color: var(--muted); }
@@ -142,10 +145,7 @@ body.fit .wrap { max-width: none; padding-block-end: 0; }
 .station.fit .room, .station.fit .door { box-sizing: border-box; }
 .station.fit .room-in { min-height: 0; padding-top: 8px; }
 .station.fit .group-label { min-width: 0; }
-.station.fit .niches { margin-top: 6px; }
 /* On the grid, subagents' niches are narrower and their names one line (the full name is in the tooltip). */
-.station.fit .niche { width: calc(var(--scale) * 12px + 14px); }
-.station.fit .niche small { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .station.fit .rows { gap: 10px; }
 /* The bridge can be folded away, giving the station the whole width. */
 .layout.no-bridge { grid-template-columns: minmax(0, 1fr); }
@@ -219,11 +219,6 @@ body.no-motion .cleaner { display: none; }
 .room-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 /* The room's line sits on a dark chip, so it reads over the window and the canteen's lights. */
 .room-head > .sub { position: relative; z-index: 1; background: rgba(6, 9, 16, .62); padding: 1px 6px; }
-.niches { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
-.niche { width: 62px; display: flex; flex-direction: column; align-items: center; gap: 3px; background: none; border: 0; padding: 0; color: inherit; font: inherit; cursor: pointer; }
-.niche:hover small, .niche:focus-visible small { color: var(--cyan); }
-.niche:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
-.niche small { font-size: 8.5px; line-height: 10px; text-align: center; overflow-wrap: anywhere; }
 .new-tag { font-family: var(--font-pixel); font-size: 8px; background: var(--cyan); color: var(--cyan-ink); padding: 0 3px; }
 .floorline { margin-top: auto; display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
 .slot { cursor: pointer; background: none; border: 0; padding: 0; color: inherit; }
@@ -310,7 +305,7 @@ textarea { resize: vertical; min-height: 84px; }
 .repo-row .room-btn[aria-pressed="true"] { background: var(--cyan); color: var(--cyan-ink); }
 .room-preview { position: relative; height: 150px; border: 3px solid var(--ink); box-shadow: inset 0 0 0 2px var(--line); overflow: hidden; }
 .preview-floorline { position: absolute; left: 10px; right: 10px; bottom: 14px; display: flex; align-items: flex-end; gap: 8px; }
-.repo-head, .repo-row { display: grid; grid-template-columns: minmax(0, 2.4fr) minmax(0, 1.2fr) 96px 54px 34px; gap: 6px; align-items: center; }
+.repo-head, .repo-row { display: grid; grid-template-columns: minmax(0, 2.4fr) minmax(0, 1.2fr) 96px 48px 54px 34px; gap: 6px; align-items: center; }
 /* A deck in CONFIGURE: its name, how many rooms it holds, and the button that removes it. */
 .deck-row { display: grid; grid-template-columns: minmax(0, 1fr) 72px 34px; gap: 8px; align-items: center; }
 .deck-row .sub { text-align: right; white-space: nowrap; }
@@ -318,7 +313,8 @@ textarea { resize: vertical; min-height: 84px; }
 .repo-row .move { display: flex; gap: 2px; }
 .repo-row .move .btn { min-height: 0; height: 34px; width: 26px; padding: 0; font-size: 10px; }
 .repo-row .move .btn[disabled] { opacity: .3; cursor: default; }
-.repo-row .room-btn { min-height: 0; height: 34px; padding: 0 6px; font-size: 10px; }
+.repo-row .room-btn, .repo-row .issues-btn { min-height: 0; height: 34px; padding: 0 6px; font-size: 10px; }
+.repo-row .issues-btn[aria-pressed="true"] { color: var(--cyan); }
 .repo-row .room-btn.needs-desc::after { content: " !"; color: #ffb43a; }
 .hint.warn { color: #ffb43a; }
 .repo-row .coord-tag { font-family: var(--font-pixel); font-size: 9px; color: var(--cyan); border: 2px solid #2c5560; padding: 9px 8px; text-align: center; }
@@ -336,7 +332,6 @@ textarea { resize: vertical; min-height: 84px; }
 .sub-row small { display: block; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
 .sub-meta { font-size: 11px; color: var(--muted); }
 @media (max-width: 720px) { .sub-row { grid-template-columns: minmax(0, 1fr) auto; } .sub-row .sub-meta { grid-column: 1; } }
-.niche-label + .niches { margin-top: 4px; }
 .drone { display: flex; flex-direction: column; align-items: center; }
 .drone-tag { margin-top: 1px; max-width: 64px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 7px/1.2 var(--font-pixel); color: var(--cyan); background: rgba(6, 34, 42, .88); padding: 1px 3px; border: 1px solid var(--ink); }
 input[type="color"] { width: 100%; height: 34px; padding: 2px; background: var(--panel); border: 2px solid var(--line); box-sizing: border-box; cursor: pointer; }
@@ -350,6 +345,9 @@ input[type="color"] { width: 100%; height: 34px; padding: 2px; background: var(-
   .repo-row input:not(:first-child), .repo-row .room-btn { grid-column: 1; }
   .repo-row .del { grid-column: 2; grid-row: 1; }
   .repo-row .move { grid-column: 1; }
+  /* Without the column heads, the issues button says what it is for. */
+  .repo-row .issues-btn { grid-column: 1; justify-self: start; }
+  .repo-row .issues-btn::before { content: attr(data-label) " "; }
 }
 .dest { display: flex; align-items: center; gap: 10px; text-align: left; padding: 8px 10px; background: transparent; border: 2px solid var(--line); color: var(--fg); font-family: inherit; font-size: 12px; cursor: pointer; width: 100%; }
 .dest[aria-pressed="true"] { border-color: var(--cyan); background: rgba(111,227,245,.08); }
@@ -569,7 +567,6 @@ const STEP = STAND.slice(0, 15).concat(["...KGK...KGK..", "..KGK.....KGK.", "..K
 const POD = (() => { const r = ["K".repeat(18), "K" + "H".repeat(16) + "K"]; for (let i = 0; i < 18; i++) r.push("KH" + "I".repeat(14) + "HK"); r.push("K" + "H".repeat(16) + "K", "KHH" + "E".repeat(12) + "HHK", "K".repeat(18)); return r; })();
 const STOOL = ["KKKKKKKK", "KGGGGGGK", "KKKKKKKK", "...KK...", "...KK...", "..KKKK.."];
 const DRONE = ["...KKK...", ".KKCCCKK.", "KCCVVVCCK", ".KKCCCKK.", "..K...K.."];
-const NICHE = (() => { const r = ["K".repeat(12), "K" + "H".repeat(10) + "K"]; for (let i = 0; i < 8; i++) r.push("K" + "N".repeat(10) + "K"); r.push("K" + "B".repeat(10) + "K", "K".repeat(12)); return r; })();
 const CAPV = [".KKK.", "KGGGK", "KCCCK", "KCCCK", "KCCCK", "KCCCK", "KCCCK", "KGGGK", ".KKK."];
 const CAPH = CAPV[0].split("").map((_, x) => CAPV.map(r => r[x]).join(""));
 const pad = (rows, w) => rows.map(r => r.padEnd(w, "."));
@@ -776,11 +773,6 @@ function workFx(fam, u) {
   if (fam === "edit") [-4, 1, 5].forEach((dx, i) => fx.push(at(15 + i * 2, 23, u, el("i", { class: "fx-spark", style: { width: u + "px", height: u + "px", "--dx": dx * u / 3 + "px", animationDelay: `${i * .2}s` } }))));
   return fx;
 }
-function niche(occupied, u) {
-  return el("div", { style: { position: "relative", width: 12 * u + "px", height: 12 * u + "px", flex: "none" } },
-    spr(NICHE, { K: INK, H: "#06080d", N: "#111723", B: occupied ? "#2a8fa3" : "#1a202c" }, u, { position: "absolute", left: 0, top: 0 }),
-    occupied ? at(1.5, 4, u, spr(DRONE, DRONE_PAL, u)) : at(2, 3, u, el("div", { style: { width: 8 * u + "px", height: 6 * u + "px", border: "1px dashed #2c3548", boxSizing: "border-box" } })));
-}
 const furn = (name, u) => Object.hasOwn(FURN, name) ? spr(FURN[name].rows, FURN[name].pal, u) : null;
 function starsSvg(w, h, seed, n) {
   let x = seed; const rnd = () => (x = (x * 16807) % 2147483647) / 2147483647;
@@ -985,8 +977,14 @@ function knownModels() {
 // Test mode adds sessions, orders and a forced hour that live only in this view.
 const demo = { sessions: [], orders: [], phase: null, sleepy: false, n: 0 };
 function viewSessions(now) {
-  return sessions.concat(demo.sessions).filter(s => isStationFolder(s.folder)).map(s => ({ ...s, vstate: vstate(s, now), color: modelColor(s.model) }))
+  return sessions.concat(demo.sessions).filter(s => isStationFolder(s.folder) && !isGoneFromApp(s)).map(s => ({ ...s, vstate: vstate(s, now), color: modelColor(s.model) }))
     .filter(s => s.vstate !== "closed" || now - (s.endedAt || 0) < CLOSED_VISIBLE_MS);
+}
+// A session the desktop app deleted or archived (the dispatcher records why it
+// ended) leaves the station at once: no desk, no row in the list. One that
+// ended on its own keeps its empty desk for CLOSED_VISIBLE_MS.
+function isGoneFromApp(s) {
+  return s.state === "ended" && (s.endReason === "deleted" || s.endReason === "archived");
 }
 // A session counts only while its folder is one of the station's: a repo
 // removed in CONFIGURE loses its room and its robots even though a session
@@ -1094,9 +1092,9 @@ function renderBridge(now, vs) {
         el("span", { class: "dotlbl", style: { color: meta.color } }, el("i", { style: { background: meta.color } }), meta.label),
         el("span", { class: "txt", style: { color: "#e6ebf2" }, text: o.text || "" }),
         el("span", { class: "to", style: { color: "var(--muted)" }, text: to }),
-        el("span", { style: { color: "#6b7487", textAlign: "right" }, text: ago(o.createdAt, now) }));
+        el("span", { class: "when", style: { color: "#6b7487", textAlign: "right" }, text: ago(o.createdAt, now) }));
     }) : el("span", { class: "sub", text: tr("You have not given any order yet. Use + GIVE ORDER.") }));
-  const proposals = orders.filter(o => o.status === "proposed").sort((a, c) => (a.createdAt || 0) - (c.createdAt || 0));
+  const proposals = orders.filter(o => o.status === "proposed").sort((a, c) => (c.createdAt || 0) - (a.createdAt || 0));
   const pbox = proposals.length ? el("div", { class: "proposals" },
     el("span", { class: "box-title", style: { color: "#c9a7ff" } }, tr("AGENTS' PROPOSALS · {n} · delivered only if you approve them", { n: proposals.length })),
     // Each proposal leads with why it is asked, the line that decides it; then
@@ -1106,7 +1104,8 @@ function renderBridge(now, vs) {
       el("span", { class: "why", text: o.reason || o.text || "" }),
       el("span", { class: "who" },
         el("b", { class: "to-chip", text: `${tr("TO")} ${deptOf(o.folder).name.toUpperCase()}${o.agent ? " · " + o.agent : ""}` }),
-        el("span", { text: `${tr("asked by \"{title}\" ({room})", { title: o.proposedBy?.title || tr("a session"), room: deptOf(o.proposedBy?.folder).name })}${o.replyTo ? " · " + tr("answers \"{title}\"", { title: o.replyTo.title || tr("a session") }) : ""} · ${ago(o.createdAt, now)}` })),
+        el("span", { class: "when", text: ago(o.createdAt, now) }),
+        el("span", { text: `${tr("asked by \"{title}\" ({room})", { title: o.proposedBy?.title || tr("a session"), room: deptOf(o.proposedBy?.folder).name })}${o.replyTo ? " · " + tr("answers \"{title}\"", { title: o.replyTo.title || tr("a session") }) : ""}` })),
       o.reason ? el("span", { class: "txt", text: o.text || "" }) : null,
       el("span", { class: "meta", text: o.replyTo ? tr("Goes to \"{title}\", the session that asked for it", { title: o.replyTo.title || tr("the session") }) + (o.mode === "existing" ? "" : tr("; if it is gone, to a free one or a new one")) : tr("Goes to {target}", { target: tr(({ any: "a free session or, if there is none, a new one", existing: "a free session", new: "a new session" })[o.mode] || "a session") }) }),
       el("span", { class: "ops" },
@@ -1155,13 +1154,8 @@ function renderRoom(folder, now, vs, u, isFirst) {
       key === "waiting" ? el("span", { class: "bang", text: "!" }) : null,
       el("span", { class: "sub", text: (d.place ? d.place + " · " : "") + parts.join(" · ") }),
       board(folder)),
-    agents.length ? el("div", { class: "niche-label pixel", text: out.length ? tr("SUBAGENTS · {n} OUT, BY DRONE", { n: out.length }) : agents.length > NICHE_MAX ? `${tr("SUBAGENTS")} · ${agents.length}` : tr("AVAILABLE SUBAGENTS") }) : null,
-    agents.length > NICHE_MAX ? droneCabinet(folder, agents, open, u) : null,
-    agents.length && agents.length <= NICHE_MAX ? el("div", { class: "niches" }, agents.map(a => {
-      const owner = open.find(s => (s.drones || []).includes(a.name));
-      return el("button", { class: "niche", type: "button", onclick: () => orderTo(folder, a.name), title: `${owner ? `${a.name} · ${tr("out with \"{title}\"", { title: owner.title || tr("session") })}` : `${a.name} · ${tr("in its niche")}${a.description ? " · " + a.description : ""}`} · ${tr("Click to give it an order")}` },
-        niche(!owner, u), el("small", { style: { color: owner ? "var(--cyan)" : "var(--muted)" }, text: a.name }), a.isNew ? el("span", { class: "new-tag", text: tr("NEW") }) : null);
-    })) : null);
+    agents.length ? el("div", { class: "niche-label pixel", text: out.length ? tr("SUBAGENTS · {n} OUT, BY DRONE", { n: out.length }) : `${tr("SUBAGENTS")} · ${agents.length}` }) : null,
+    agents.length ? droneCabinet(folder, agents, open, u) : null);
   const order = { waiting: 0, working: 1, offline: 2, standby: 3, closed: 4 };
   const slots = inRoom.sort((a, c) => order[a.vstate] - order[c.vstate] || (c.lastEventAt || 0) - (a.lastEventAt || 0)).slice(0, 5);
   const floor = el("div", { class: "floorline" });
@@ -1198,17 +1192,17 @@ function speech(s) {
     el("b", { text: title }), line ? el("small", { text: line }) : null);
 }
 
-// A room with many subagents keeps them in a drone cabinet on the wall: one
-// small slot each, lit while the drone is docked and empty while it is out with
-// a session. The slot's tooltip names it; the cabinet opens the full list.
-const NICHE_MAX = 6;
+// A room keeps its subagents in a drone cabinet on the wall: one small slot
+// each, lit while the drone is docked and empty while it is out with a session.
+// The slot's tooltip names it; the cabinet opens the full list, with each one's
+// description and a shortcut to give it an order.
 function droneCabinet(folder, agents, open, u) {
   const ownerOf = name => open.find(s => (s.drones || []).includes(name));
   const slotW = 4 * u + 2, slotH = 3 * u + 2;
   return el("button", { class: "drone-cabinet", type: "button", title: tr("See all subagents"), "aria-label": tr("Subagents of {room}: {n}", { room: deptOf(folder).name, n: agents.length }), onclick: () => openSubagents(folder), style: { "--slot-w": slotW + "px", "--slot-h": slotH + "px" } },
     agents.map(a => {
       const owner = ownerOf(a.name);
-      return el("i", { class: "cab-slot" + (owner ? " out" : "") + (a.isNew ? " new" : ""), title: owner ? `${a.name} · ${tr("out with \"{title}\"", { title: owner.title || tr("session") })}` : `${a.name} · ${tr("in its niche")}${a.description ? " · " + a.description : ""}` });
+      return el("i", { class: "cab-slot" + (owner ? " out" : "") + (a.isNew ? " new" : ""), title: owner ? `${a.name} · ${tr("out with \"{title}\"", { title: owner.title || tr("session") })}` : `${a.name} · ${tr("docked in the cabinet")}${a.description ? " · " + a.description : ""}` });
     }));
 }
 // The order form for one subagent of a room.
@@ -1252,13 +1246,25 @@ function pendingBox(now) {
   return box;
 }
 
-// Open handoff issues of every department, grouped by department.
+// Whether the station shows a room's issues: its repo's row turns them off
+// with issues: false, and the page leaves them out at once. A room of a /*
+// group cannot be told apart from another group's here, so it follows the
+// dispatcher, which stops listing it when its session reloads.
+function showsIssues(folder) {
+  const own = REPOS.find(r => !isGroupRemote(r.remote) && repoFolder(r) === folder);
+  return !own || own.issues !== false;
+}
+// Open issues of every department, grouped by department, and why the issues
+// of a room could not be read, as the dispatcher noted it.
 function handoffBox(now) {
   const byFolder = handoffs.byFolder || {};
-  const folders = folderList().filter(f => !f.startsWith("#") && (byFolder[f] || []).length);
+  const problems = handoffs.problems || {};
+  const folders = folderList().filter(f => !f.startsWith("#") && showsIssues(f) && (byFolder[f] || []).length);
   const issueCount = folders.reduce((n, f) => n + byFolder[f].length, 0);
-  if (!issueCount) return null;
+  const unread = folderList().filter(f => !f.startsWith("#") && showsIssues(f) && typeof problems[f] === "string");
+  if (!issueCount && !unread.length) return null;
   const box = el("div", { class: "todo" }, el("span", { class: "box-title", style: { color: "#ffcf6e" } }, `${tr("OPEN HANDOFFS")} · ${issueCount}`));
+  for (const f of unread) box.append(el("div", { class: "todo-item" }, el("span", { class: "t", text: deptOf(f).name }), el("span", { class: "m", text: problems[f] })));
   // One block per department, in its accent colour, so each heading clearly
   // owns the issues under it.
   for (const f of folders) {
@@ -1273,11 +1279,11 @@ function handoffBox(now) {
   return box;
 }
 
-// Open handoff issues for this department, read by the dispatcher from GitHub.
+// Open issues for this department, read by the dispatcher from GitHub or GitLab.
 // The from-* label of a handoff issue names the department that asked
 // (config/departments.senders maps it to a folder); its note takes that department's colour.
 function board(folder) {
-  const list = handoffs.byFolder?.[folder] || [];
+  const list = showsIssues(folder) ? handoffs.byFolder?.[folder] || [] : [];
   if (!list.length) return null;
   const shown = list.slice(0, 8);
   return el("div", { class: "board", title: `${pl(list.length, "open handoff", "open handoffs")}; ${tr("click a note to see it")}` },
@@ -1294,6 +1300,7 @@ function board(folder) {
 function drawTubes(box, now, gen) {
   const travelling = orders.concat(demo.orders).filter(o => o.proposedBy?.folder && o.proposedBy.folder !== o.folder
     && (o.status === "proposed" || (o.status === "pending" && now - (o.approvedAt || o.createdAt || 0) < IN_TRANSIT_MS)));
+  for (const key of rideStarts.keys()) if (key.startsWith("tube:") && !travelling.some(o => o.status === "pending" && key === `tube:${o.id}`)) rideStarts.delete(key);
   if (!travelling.length || window.matchMedia("(max-width: 720px)").matches) return;
   whenSettled(() => {
     if (gen !== stationGen) return;
@@ -1335,7 +1342,7 @@ function drawTubes(box, now, gen) {
       const waiting = o.status === "proposed";
       const cap = el("button", { class: "tube-cap " + (waiting ? "waiting" : "moving"), type: "button",
         title: `${waiting ? tr("Waiting for your approval") : tr("On its way")} · ${deptOf(o.proposedBy.folder).name} → ${deptOf(o.folder).name}: ${o.text || ""}`,
-        style: { offsetPath: `path("${d}")` }, onclick: () => { if (!String(o.id).startsWith("demo-")) openOrderDetail(o.id); } },
+        style: { offsetPath: `path("${d}")`, ...(waiting ? {} : { animationDelay: rideDelay(`tube:${o.id}`) }) }, onclick: () => { if (!String(o.id).startsWith("demo-")) openOrderDetail(o.id); } },
         spr(CAPH, capPal(waiting ? "#ffb43a" : "#7fd6a0"), 3));
       box.append(cap);
     });
@@ -1658,25 +1665,46 @@ function renderStation(now, vs) {
   });
   // Orders in the shaft: one being handed over waits at the top of the shaft;
   // once delivered it rides down to its room once, and is gone. A redraw never
-  // drops the same capsule twice (droppedCapsules).
+  // drops the same capsule twice (droppedCapsules), and one in mid-fall goes
+  // on from where it was (rideDelay).
   drawTubes(box, now, gen);
   const waiting = orders.concat(demo.orders).filter(o => o.status === "claimed");
   const arriving = orders.concat(demo.orders).filter(o => o.status === "delivered" && now - (o.deliveredAt || o.updatedAt || 0) < IN_TRANSIT_MS && !droppedCapsules.has(o.id));
+  // A ride whose order no longer arrives (it landed while the station was not
+  // shown, or went out of transit) is forgotten.
+  for (const key of rideStarts.keys()) if (key.startsWith("drop:") && !arriving.some(o => key === `drop:${o.id}`)) rideStarts.delete(key);
   if (small || (!waiting.length && !arriving.length)) return;
   whenSettled(() => {
     if (gen !== stationGen) return;
     waiting.forEach((o, i) => box.append(el("div", { class: "capsule waiting", title: `En cola: ${o.text} → ${deptOf(o.folder).name}`, style: { top: `${10 + i * 26}px` } }, spr(CAPV, capPal("#6fe3f5"), 3))));
-    arriving.forEach((o, i) => {
+    for (const o of arriving) {
+      // Each new capsule starts its fall a moment after the one before.
+      if (!rideStarts.has(`drop:${o.id}`)) { lastDropAt = Math.max(performance.now(), lastDropAt + DROP_GAP_MS); rideStarts.set(`drop:${o.id}`, lastDropAt); }
+      if (performance.now() - rideStarts.get(`drop:${o.id}`) >= DROP_MS) { landCapsule(o.id); continue; }
       const room = box.querySelector(`[data-folder="${CSS.escape(o.folder || "")}"]`);
       const depth = room ? room.getBoundingClientRect().bottom - box.getBoundingClientRect().top - 40 : box.clientHeight - 40;
-      const capsule = el("div", { class: "capsule dropping", title: `${o.text} → ${deptOf(o.folder).name}`, style: { animationDelay: `${i * 1.2}s`, "--d": `${Math.max(40, depth)}px` } }, spr(CAPV, capPal("#7fd6a0"), 3));
-      // Marked only once it has landed: a redraw in mid-fall drops it again.
-      capsule.addEventListener("animationend", () => { droppedCapsules.add(o.id); capsule.remove(); });
+      const capsule = el("div", { class: "capsule dropping", title: `${o.text} → ${deptOf(o.folder).name}`, style: { animationDelay: rideDelay(`drop:${o.id}`), "--d": `${Math.max(40, depth)}px` } }, spr(CAPV, capPal("#7fd6a0"), 3));
+      capsule.addEventListener("animationend", () => { landCapsule(o.id); capsule.remove(); });
       box.append(capsule);
-    });
+    }
   });
 }
 const droppedCapsules = new Set();
+// When each capsule's ride began, in performance.now() time, so a redraw (any
+// change on the station, such as a new order) carries a moving capsule on from
+// where it was instead of starting its ride over: its animation starts that
+// long ago, with a negative delay. DROP_MS is the fall's length in the CSS.
+const rideStarts = new Map();
+const DROP_MS = 3200, DROP_GAP_MS = 1200;
+let lastDropAt = 0;
+function rideDelay(key) {
+  if (!rideStarts.has(key)) rideStarts.set(key, performance.now());
+  return `${(rideStarts.get(key) - performance.now()) / 1000}s`;
+}
+function landCapsule(id) {
+  droppedCapsules.add(id);
+  rideStarts.delete(`drop:${id}`);
+}
 
 // ---------- celebrations ----------
 // A handoff issue that closed, or an order whose session finished its turn
@@ -2077,7 +2105,7 @@ function renderLegend() {
       ...["Opus", "Fable", "Sonnet", "Haiku", "Other"].map(f => item(spr(STAND, robotPal(MODEL_FAMILY_COLORS[f] || modelColor("claude-new"), "working"), 2), f === "Other" ? tr("Other") : f, null, f === "Other" ? tr("auto colour") : "", true))),
     block("SUBAGENTS AND ORDERS",
       item(el("div", { class: "drone" }, spr(DRONE, DRONE_PAL, 3), el("span", { class: "drone-tag", text: "agent" })), tr("Drone"), "var(--cyan)", tr("a subagent at work")),
-      item(niche(true, 2), tr("Free subagent"), "var(--muted)", tr("in its niche")),
+      item(el("span", { class: "drone-cabinet", style: { "--slot-w": "14px", "--slot-h": "11px", gridTemplateColumns: "repeat(2, var(--slot-w))", cursor: "default" } }, el("i", { class: "cab-slot" }), el("i", { class: "cab-slot out" })), tr("Drone cabinet"), "var(--muted)", tr("lit: docked; empty: out")),
       item(spr(CAPH, capPal("#c9cfd9"), 3), tr("Capsule"), "var(--muted)", tr("order on its way"))));
 }
 
@@ -2174,9 +2202,9 @@ function renderModal() {
         el("dt", { text: "Mod" }), el("dd", { style: { color: isOldMod(s) ? "#ffb43a" : "#c9d2e0" }, text: isOldMod(s) ? `${s.modVersion || tr("older than 0.5.0")} · ${tr("old: /reload-plugins or restart the app")}` : s.modVersion }),
         el("dt", { text: tr("Last activity") }), el("dd", { text: ago(v.vstate === "closed" ? s.endedAt : s.lastEventAt, now) }),
         el("dt", { text: tr("Active drones") }), el("dd", {}, (s.drones || []).length ? s.drones.map(d => el("div", { class: "dotlbl", style: { color: "var(--cyan)" } }, spr(DRONE, DRONE_PAL, 2), d)) : el("span", { style: { color: "#6b7487" }, text: tr("None") }))),
-      el("div", { style: { display: "flex", gap: "10px" } },
-        el("button", { class: "btn btn-cyan", type: "button", style: { flex: 1 }, onclick: () => { form.showForm = true; renderModal(); document.getElementById("order-text")?.focus(); } }, tr("GIVE ORDER")),
-        typeof s.link === "string" && s.link.startsWith("claude://") ? el("a", { class: "btn btn-dark", href: s.link, target: "_blank", rel: "noopener", style: { flex: 1, textAlign: "center", textDecoration: "none" } }, tr("OPEN SESSION")) : null)));
+      el("div", { style: { display: "flex", flexWrap: "wrap", gap: "10px" } },
+        el("button", { class: "btn btn-cyan", type: "button", onclick: () => { form.showForm = true; renderModal(); document.getElementById("order-text")?.focus(); } }, tr("GIVE ORDER")),
+        typeof s.link === "string" && s.link.startsWith("claude://") ? linkBtn(s.link, tr("OPEN SESSION"), { marginLeft: "auto" }) : null)));
   }
   if (form.showForm) sheet.append(renderForm(now));
   showModal(sheet);
@@ -2226,7 +2254,7 @@ function renderForm(now) {
   ta.value = form.text;
   card.append(el("label", { class: "field", for: "order-text" }, el("span", {}, tr("ORDER")), ta),
     el("div", { style: { display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" } }, el("span", { class: "sub" }, tr("Shortcuts")),
-      el("button", { class: "quick", type: "button", onclick: () => set("text", tr("Check your pending handoffs with gh issue list --label handoff and take the most urgent one.")) }, tr("Check your handoffs")),
+      el("button", { class: "quick", type: "button", onclick: () => set("text", tr("Check your pending handoffs (the open issues of your repo) and take the most urgent one.")) }, tr("Check your handoffs")),
       el("button", { class: "quick", type: "button", onclick: () => set("text", tr("End of shift: leave in the issue you are on what you did, what is left and the next step, and tell me when it is done.")) }, tr("End of shift"))),
     el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px" } },
       el("span", { class: form.err ? "err" : "ok", "aria-live": "polite", text: form.err || form.msg }),
@@ -2294,7 +2322,6 @@ function openOrderDetail(id, isEditing = false) {
   // session it is meant for. And the session that proposed it.
   const holder = o.status === "needs_click" ? dispatchers.find(d => d.machine === o.claimedBy)?.sessionId : o.deliveredTo || o.sessionId;
   const openAt = sessionLink(holder), openAsker = o.proposedBy?.sessionId !== holder ? sessionLink(o.proposedBy?.sessionId) : null;
-  const linkBtn = (href, label) => el("a", { class: "btn btn-dark", href, target: "_blank", rel: "noopener", style: { display: "inline-flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box", textDecoration: "none" } }, label);
   const editor = isEditing ? el("textarea", { id: "order-edit", rows: "14", "aria-label": tr("Order text"), spellcheck: "true" }) : null;
   if (editor) editor.value = o.text || "";
   const card = el("div", { class: "card wide", role: "dialog", "aria-label": tr("Order") },
@@ -2386,6 +2413,8 @@ async function saveOrderText(id, text, approve) {
   }
 }
 // The app link of a session the station knows, when it reported one.
+// A link that looks and sits like the buttons beside it.
+const linkBtn = (href, label, style = {}) => el("a", { class: "btn btn-dark", href, target: "_blank", rel: "noopener", style: { display: "inline-flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box", textDecoration: "none", ...style } }, label);
 function sessionLink(id) {
   const s = id && sessions.find(x => x.sessionId === id);
   return s && typeof s.link === "string" && s.link.startsWith("claude://") ? s.link : null;
@@ -2395,10 +2424,16 @@ function openHandoffDetail(folder, i) {
   openInfo(el("div", { class: "card wide", role: "dialog", "aria-label": tr("Handoff") },
     el("div", { class: "card-head" }, el("span", { class: "box-title" }, tr("HANDOFF")), el("button", { class: "btn btn-ghost", type: "button", onclick: closeModal }, tr("CLOSE"))),
     el("div", { class: "detail-text", text: i.title || "" }),
+    i.excerpt ? el("p", { class: "handoff-excerpt", text: i.excerpt }) : null,
     el("dl", { class: "facts" }, rows.flatMap(([k, v]) => [el("dt", { text: tr(k) }), el("dd", { text: v })])),
     el("div", { style: { display: "flex", flexWrap: "wrap", gap: "10px" } },
-      el("button", { class: "btn btn-cyan", type: "button", style: { flex: "1 1 160px" }, onclick: () => assignHandoff(folder, i) }, tr("ASSIGN TO AN AGENT")),
-      typeof i.url === "string" && i.url.startsWith("https://") ? el("a", { class: "btn btn-dark", href: i.url, target: "_blank", rel: "noopener", style: { flex: "1 1 160px", textAlign: "center", textDecoration: "none" } }, tr("OPEN ON GITHUB")) : null)));
+      el("button", { class: "btn btn-cyan", type: "button", onclick: () => assignHandoff(folder, i) }, tr("ASSIGN TO AN AGENT")),
+      typeof i.url === "string" && i.url.startsWith("https://") ? linkBtn(i.url, issueHostLabel(i.url), { marginLeft: "auto" }) : null)));
+}
+// The link to an issue, named after where it lives.
+function issueHostLabel(url) {
+  const host = (() => { try { return new URL(url).hostname; } catch { return ""; } })();
+  return host === "github.com" ? tr("OPEN ON GITHUB") : /(^|[.-])gitlab([.-]|$)/.test(host) ? tr("OPEN ON GITLAB") : tr("OPEN THE ISSUE");
 }
 // An open handoff issue becomes an order for its own department: the order
 // form opens filled in, and the user picks the agent, the session and the
@@ -2408,7 +2443,7 @@ function assignHandoff(folder, i) {
   form = {
     sessionId: null, proj: folder, role: "main", dest: "any", target: "", modelMode: "session", model: "", msg: "", err: "", showForm: true,
     handoff: { number: i.number, url: link ? i.url : null, title: i.title || "" },
-    text: tr("Take the handoff #{n} \"{title}\" of this repo{link}. Read it with gh issue view {n}, do what it asks and close it with the commit or the PR that solves it. If anything is unclear, ask me before you start.", { n: i.number, title: i.title || tr("untitled"), link }),
+    text: tr("Take the handoff #{n} \"{title}\" of this repo{link}. Read it with {view}, do what it asks and close it with the commit or the pull or merge request that solves it. If anything is unclear, ask me before you start.", { n: i.number, title: i.title || tr("untitled"), link, view: handoffs.views?.[folder] ? String(handoffs.views[folder]).replace("<n>", String(i.number)) : typeof i.view === "string" && i.view ? i.view : `gh issue view ${i.number}` }),
   };
   renderModal();
   document.getElementById("order-text")?.focus();
@@ -2484,7 +2519,7 @@ const rowsFrom = (cfg, isTemplate = false) => validRepos(cfg.repos).map(r => {
   const room = isPlainObject(cfg.departments) && isPlainObject(cfg.departments[repoFolder(r)]) ? cfg.departments[repoFolder(r)] : {};
   const style = isGroupRemote(r.remote) ? {} : { ...room };
   delete style.name;
-  return { remote: r.remote, folder: isGroupRemote(r.remote) ? "" : (typeof r.folder === "string" ? r.folder : ""), name: typeof room.name === "string" ? room.name : "", style, touched: new Set(isTemplate ? Object.keys(style) : []) };
+  return { remote: r.remote, folder: isGroupRemote(r.remote) ? "" : (typeof r.folder === "string" ? r.folder : ""), issues: r.issues !== false, name: typeof room.name === "string" ? room.name : "", style, touched: new Set(isTemplate ? Object.keys(style) : []) };
 });
 // A repo added in CONFIGURE starts with a look of its own, so new rooms do not
 // all come out alike: one of a few kinds of room (its floor, furniture and the
@@ -2504,7 +2539,7 @@ function randomRoomStyle() {
   const kit = pick(ROOM_KITS), accent = pick(STRIPES);
   return { accent, wall: [shade(accent, -.78), shade(accent, -.85)], floor: kit.floor, furniture: [...kit.furniture], accessory: kit.accessory };
 }
-const emptyRow = () => ({ remote: "", folder: "", name: "", style: randomRoomStyle(), touched: new Set() });
+const emptyRow = () => ({ remote: "", folder: "", issues: true, name: "", style: randomRoomStyle(), touched: new Set() });
 const rowKey = r => r.folder.trim() || repoFolder(r);
 // A room the agents cannot place a task in: no description of what its agent
 // does. The map they get shows it as not described.
@@ -2688,6 +2723,7 @@ function renderConfig() {
         cfgForm.room = cfgForm.room === k ? null : k; renderConfig();
         if (cfgForm.room != null && window.matchMedia("(max-width: 720px)").matches) document.getElementById("room-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
       } }, tr("SETTINGS")),
+      isCoordinationRow(r) ? el("span") : el("button", { class: "btn btn-ghost issues-btn", type: "button", "data-label": tr("ISSUES") + ":", "aria-pressed": String(r.issues !== false), title: tr(isGroup ? "Show the open issues of this group's repos on the station" : "Show this repo's open issues on the station"), onclick: () => { r.issues = r.issues === false; markDirty(); renderConfig(); } }, r.issues === false ? tr("NO") : tr("YES")),
       el("span", { class: "move" },
         el("button", { class: "btn btn-ghost", type: "button", title: tr("Up: its room is drawn earlier"), "aria-label": tr("Move this repo up"), disabled: k === 0, onclick: () => moveRepo(k, -1) }, "▲"),
         el("button", { class: "btn btn-ghost", type: "button", title: tr("Down: its room is drawn later"), "aria-label": tr("Move this repo down"), disabled: k === cfgForm.repos.length - 1, onclick: () => moveRepo(k, 1) }, "▼")),
@@ -2721,8 +2757,8 @@ function renderConfig() {
       el("label", { class: "field", for: "cfg-coordination" }, el("span", {}, tr("COORDINATION")), coordinationSelect())),
     el("p", { class: "hint", text: tr("The coordination is the repo whose Claude Code session delivers the orders you approve; it has no room on the station. A clone of agent-station, which holds this page, is the recommended one, and it is chosen for you once you add it. Keep a session open in it: after restarting Claude Code, or opening that session again, send it any message to wake it up, and the bridge shows the dispatcher running.") }),
     el("div", { class: "field" }, el("span", {}, tr("STATION REPOS")),
-      el("p", { class: "hint", text: tr("One row per repo, with the remote of its origin (for example github.com/organization/repo). A remote ending in /* takes every repo of that group, each with its own room. The rooms are drawn in the order of this list: move them with ▲ and ▼. Each room's name, what its agent does and its look are in SETTINGS.") }),
-      el("div", { class: "repo-head" }, el("span", { text: tr("REMOTE") }), el("span", { text: tr("DECK") }), el("span"), el("span", { text: tr("ORDER") }), el("span")),
+      el("p", { class: "hint", text: tr("One row per repo, with the remote of its origin (for example github.com/organization/repo). A remote ending in /* takes every repo of that group, each with its own room. The rooms are drawn in the order of this list: move them with ▲ and ▼. Each room's name, what its agent does and its look are in SETTINGS. ISSUES says whether the station shows the repo's open issues.") }),
+      el("div", { class: "repo-head" }, el("span", { text: tr("REMOTE") }), el("span", { text: tr("DECK") }), el("span"), el("span", { text: tr("ISSUES") }), el("span", { text: tr("ORDER") }), el("span")),
       el("div", { class: "repo-rows" }, rows),
       el("div", { style: { display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" } },
         el("button", { class: "quick", type: "button", onclick: () => { cfgForm.repos.push(emptyRow()); markDirty(); renderConfig(); document.getElementById(`cfg-remote-${cfgForm.repos.length - 1}`)?.focus(); } }, tr("+ ADD REPO")),
@@ -2791,7 +2827,7 @@ async function saveConfig() {
     if (seenRemotes.has(remote)) { cfgForm.err = tr("{remote} is repeated.", { remote }); return renderConfig(); }
     if (folder && !FOLDER_PATTERN.test(folder)) { cfgForm.err = tr("The folder \"{folder}\" takes only letters, digits, dot, hyphen and underscore.", { folder }); return renderConfig(); }
     seenRemotes.add(remote);
-    repos.push(folder ? { remote, folder } : { remote });
+    repos.push({ remote, ...(folder ? { folder } : {}), ...(row.issues === false ? { issues: false } : {}) });
     if (isGroup) { hasGroup = true; continue; }
     const key = folder || remote.split("/").pop();
     if (keys.has(key)) { cfgForm.err = tr("{a} and {b} would go to the same room, \"{room}\": give one of them another department.", { a: keys.get(key), b: remote, room: key }); return renderConfig(); }
@@ -2895,6 +2931,7 @@ const TESTS = [
     ["Starts working", () => demoChange("idle", { state: "working", tool: "Edit", detail: "register.ts" }, "First add a strolling robot.")],
     ["Ends a turn", () => demoChange("working", { state: "idle", tool: null, detail: null }, "First add a working robot.")],
     ["A session closes", () => demoChange("idle", { state: "ended", endedAt: Date.now() }, "First add a strolling robot.")],
+    ["A session is deleted", () => demoChange("idle", { state: "ended", endedAt: Date.now(), endReason: "deleted" }, "First add a strolling robot.")],
   ]],
   ["ORDERS", [
     ["Queued capsule", () => demoOrder(() => ({ status: "claimed" }))],
@@ -3023,13 +3060,11 @@ const ES = {
   "No folder": "Sin carpeta",
   "Session": "Sesión",
   "SUBAGENTS": "SUBAGENTES",
-  "AVAILABLE SUBAGENTS": "SUBAGENTES DISPONIBLES",
   "SUBAGENTS · {n} OUT, BY DRONE": "SUBAGENTES · {n} FUERA, EN DRON",
   "out with \"{title}\"": "fuera con «{title}»",
   "Out with \"{title}\"": "Fuera con «{title}»",
-  "in its niche": "en su nicho",
+  "docked in the cabinet": "en el armario",
   "In its niche": "En su nicho",
-  "Click to give it an order": "Pulsa para darle una orden",
   "NEW": "NUEVO",
   "Subagent {name}, launched by this session": "Subagente {name}, lanzado por esta sesión",
   "See all subagents": "Ver todos los subagentes",
@@ -3100,14 +3135,14 @@ const ES = {
   "10 min silent": "10 min callado",
   "auto colour": "color auto",
   "a subagent at work": "subagente activo",
-  "in its niche": "en su nicho",
   "order on its way": "orden en camino",
   "Sleeping": "Durmiendo",
   "Other": "Otro",
   "Give order": "Dar orden",
   "Choose another": "Elegir otro",
   "lab, classroom…": "laboratorio, aula…",
-  "Free subagent": "Subagente libre",
+  "Drone cabinet": "Armario de drones",
+  "lit: docked; empty: out": "encendido: en su sitio; vacío: fuera",
   "Drone": "Dron",
   "Capsule": "Cápsula",
   "HIDE CLOSED": "OCULTAR CERRADAS",
@@ -3152,7 +3187,12 @@ const ES = {
   "Order": "Orden",
   "Shortcuts": "Atajos",
   "Check your handoffs": "Revisa tus encargos",
-  "Check your pending handoffs with gh issue list --label handoff and take the most urgent one.": "Revisa tus encargos pendientes con gh issue list --label handoff y atiende el más prioritario.",
+  "Check your pending handoffs (the open issues of your repo) and take the most urgent one.": "Revisa tus encargos pendientes (las issues abiertas de tu repo) y atiende el más prioritario.",
+  "ISSUES": "ISSUES",
+  "YES": "SÍ",
+  "NO": "NO",
+  "Show this repo's open issues on the station": "Mostrar en la estación las issues abiertas de este repo",
+  "Show the open issues of this group's repos on the station": "Mostrar en la estación las issues abiertas de los repos de este grupo",
   "End of shift": "Cierra turno",
   "End of shift: leave in the issue you are on what you did, what is left and the next step, and tell me when it is done.": "Cierra turno: deja en la issue que llevas qué has hecho, qué falta y el siguiente paso, y avísame cuando esté.",
   "SEND CAPSULE": "ENVIAR CÁPSULA",
@@ -3197,8 +3237,10 @@ const ES = {
   "Opened": "Abierta",
   "ASSIGN TO AN AGENT": "ASIGNAR A UN AGENTE",
   "OPEN ON GITHUB": "ABRIR EN GITHUB",
+  "OPEN ON GITLAB": "ABRIR EN GITLAB",
+  "OPEN THE ISSUE": "ABRIR LA ISSUE",
   "untitled": "sin título",
-  "Take the handoff #{n} \"{title}\" of this repo{link}. Read it with gh issue view {n}, do what it asks and close it with the commit or the PR that solves it. If anything is unclear, ask me before you start.": "Atiende el encargo #{n} «{title}» de este repo{link}. Léelo con gh issue view {n}, haz lo que pide y ciérralo con el commit o el PR que lo resuelva. Si algo no está claro, pregúntamelo antes de empezar.",
+  "Take the handoff #{n} \"{title}\" of this repo{link}. Read it with {view}, do what it asks and close it with the commit or the pull or merge request that solves it. If anything is unclear, ask me before you start.": "Atiende el encargo #{n} «{title}» de este repo{link}. Léelo con {view}, haz lo que pide y ciérralo con el commit o la pull o merge request que lo resuelva. Si algo no está claro, pregúntame antes de empezar.",
   "ROOM SETTINGS": "AJUSTES DE LA SALA",
   "SETTINGS": "AJUSTES",
   "FOLDER (optional)": "CARPETA (opcional)",
@@ -3293,7 +3335,7 @@ const ES = {
   "Bridge · no dispatcher, orders wait: open a Claude Code session in {repo} and send it any message": "Puente de mando · sin despachador, las órdenes esperan: abre una sesión de Claude Code en {repo} y escríbele cualquier cosa",
   "Bridge · no coordination repo: choose one in CONFIGURE": "Puente de mando · sin repo de coordinación: elige uno en CONFIGURAR",
   "STATION REPOS": "REPOS DE LA ESTACIÓN",
-  "One row per repo, with the remote of its origin (for example github.com/organization/repo). A remote ending in /* takes every repo of that group, each with its own room. The rooms are drawn in the order of this list: move them with ▲ and ▼. Each room's name, what its agent does and its look are in SETTINGS.": "Una fila por repo, con el remote de su origin (por ejemplo github.com/organizacion/repo). Un remote acabado en /* toma todos los repos de ese grupo, cada uno con su propia sala. Las salas se pintan en el orden de esta lista: muévelas con ▲ y ▼. El nombre de cada sala, qué hace su agente y su aspecto están en AJUSTES.",
+  "One row per repo, with the remote of its origin (for example github.com/organization/repo). A remote ending in /* takes every repo of that group, each with its own room. The rooms are drawn in the order of this list: move them with ▲ and ▼. Each room's name, what its agent does and its look are in SETTINGS. ISSUES says whether the station shows the repo's open issues.": "Una fila por repo, con el remote de su origin (por ejemplo github.com/organizacion/repo). Un remote acabado en /* toma todos los repos de ese grupo, cada uno con su propia sala. Las salas se pintan en el orden de esta lista: muévelas con ▲ y ▼. El nombre de cada sala, qué hace su agente y su aspecto están en AJUSTES. ISSUES dice si la estación muestra las issues abiertas del repo.",
   "VISIBLE NAME": "NOMBRE VISIBLE",
   "Repo remote": "Remote del repo",
   "server/group/repo": "servidor/grupo/repo",
@@ -3335,6 +3377,7 @@ const ES = {
   "Starts working": "Se pone a trabajar",
   "Ends a turn": "Termina un turno",
   "A session closes": "Se cierra una sesión",
+  "A session is deleted": "Se borra una sesión",
   "First add a strolling robot.": "Primero añade un robot paseando.",
   "First add a working robot.": "Primero añade un robot trabajando.",
   "Queued capsule": "Cápsula en cola",

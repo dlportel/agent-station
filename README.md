@@ -38,6 +38,9 @@ page with sample data, nothing to install ([in Spanish](https://dlportel.github.
 - **Orders from one place.** Send work to a repo yourself: to a free session, a particular one, or
   a new one, with the model you choose. One session per machine, the coordination session,
   delivers every approved order.
+- **Each room's pending work.** The open issues of every room's repo, on GitHub or GitLab, show on
+  its board as handoffs. One click turns a handoff into an order for that room, and every agent
+  knows the command that opens an issue in another room's repo.
 - **A station you shape.** Rooms, decks, colours, furniture, robot silhouettes and accessories are
   set in the page's configuration panel. The station speaks English or Spanish, and its scenery
   is a theme you can swap for one of your own.
@@ -57,7 +60,7 @@ Three pieces, and none of them names a station, a company or a repo:
 |---|---|
 | The page, `page/office.html` | The station. You publish it as a claude.ai artifact with a database; the configuration lives in that database. Its scenery comes from a theme, `page/themes/space.js` by default, published next to it. |
 | The plugin, `plugin/` | Installed in Claude Code. In each session of a station's repos it writes that session's state to the station, gives the agent the station's map and the `propose_order` tool, and guards the station against agents writing to it. |
-| The coordination session | Any session opened in the repo you name as coordination. It runs the dispatcher, which delivers the approved orders on its machine and keeps the station's catalogs (subagents, open handoff issues, models) up to date. |
+| The coordination session | Any session opened in the repo you name as coordination. It runs the dispatcher, which delivers the approved orders on its machine and keeps the station's catalogs (subagents, open issues, models) up to date. |
 
 A session belongs to a station when the origin remote of its repo is one of the station's repos.
 Sessions of other repos, or outside a git repo, are ignored: the plugin never writes anywhere
@@ -72,7 +75,18 @@ else.
 - A claude.ai account that can publish artifacts with a database.
 - Your repos cloned side by side, in one folder: the dispatcher finds a station's repos next to
   the coordination repo.
-- Optionally, the GitHub CLI (`gh`), to show each room's open `handoff` issues.
+- Optionally, for handoffs (the open issues of each room's repo, which the station shows as the
+  room's pending work; ISSUES in CONFIGURE turns them off for a repo), the command
+  line tool of the host of each repo, installed and logged in on every machine with a coordination
+  session or with agents that open handoffs: the GitHub CLI (`gh`, then `gh auth login`) for repos
+  on GitHub, and the GitLab CLI (`glab`, then `glab auth login`, or a `GITLAB_TOKEN` variable with
+  the `api` scope) for repos on GitLab, gitlab.com or one of your own. The station works out each
+  repo's host from its remote, so a station can mix both, and there is nothing to configure. Without
+  the tool, or without a login, orders still work: the coordination session shows a notice when it
+  starts, the room's board says what is missing on which machine, and the agents ask for work with
+  orders instead. A repo on any other host takes only orders. After installing a tool or logging
+  in, reload the coordination session (`/reload-plugins`), which checks again; a tool installed
+  while the app was open is only found after restarting the app.
 
 ## Quick start
 
@@ -134,6 +148,16 @@ reject it, or edit its text first. When a room answers an order it received, its
 to the very session that asked. The coordination session only hands orders out: agents never ask
 it to forward anything.
 
+**Handoffs.** The dispatcher reads the open issues of each room's repo every fifteen minutes and
+the room's board shows them. **ASSIGN TO AN AGENT**, on a handoff, opens the order form filled in
+to handle that issue. A repo whose issues you do not want on the station is set to NO under ISSUES
+in CONFIGURE. When a room's issues cannot be read (no `gh` or `glab`, or no login), its board says
+why and on which machine.
+
+**Resending.** An order waiting for your click, not delivered, or delivered can be sent again from
+its detail, as it was or to another destination. A delivered one asks first, naming the session
+that got it, since the work may already be done.
+
 **Limits.** An order's text takes up to 20,000 characters and its reason up to 1,000. A longer one
 is refused whole, with its length, never cut.
 
@@ -155,7 +179,7 @@ configuration panel:
 | `language` | `en` (the default) or `es`: the language of the page, of the map each session gets, of the orders delivered and of the dispatcher's notes. What you write in the configuration (room names, places, deck labels, descriptions) is shown as written. |
 | `theme` | The scenery: `space`, the default, or a theme of your own (see *Themes*). |
 | `coordination` | The repo whose sessions coordinate the station. |
-| `repos` | The station's repos by origin remote: `{ "remote": "github.com/org/repo", "folder": "room" }`, or a remote ending in `/*` for every repo of a group. |
+| `repos` | The station's repos by origin remote: `{ "remote": "github.com/org/repo", "folder": "room" }`, or a remote ending in `/*` for every repo of a group. `"issues": false` leaves a repo's (or a group's) issues off the station. |
 | `departments` | Each room: `name`, `description` (what its agent does, which the other agents read), `place`, `accent`, `wall`, `floor`, `furniture`, `accessory`, `body`, `antenna`, `weight`. |
 | `layout` | The decks: `{ "label": "DECK", "items": ["room", "#canteen", "#hangar"] }`. `#canteen` and `#hangar` are shared rooms where idle robots rest and recharge; one on no deck shows after the decks. |
 | `offStation` | Shared rooms taken off the station, such as `["#canteen"]`. Every station has both unless this lists them. |
@@ -248,6 +272,10 @@ page reads or writes its data, open the demo locally (serve the repo, for exampl
 - **After restarting the Claude app, send the coordination session a message.** Restored sessions
   start their plugins only then, so until you do, no dispatcher runs and orders wait; the bridge
   says so.
+- **The app turns `@` into `＠` in messages between sessions.** An order delivered to an open
+  session arrives with every at sign replaced by the full-width one (U+FF20), so that it never
+  attaches a file; the order says so when its text has one, so that the agent writes the ordinary
+  one in code, SQL, email addresses and paths. A new session's card keeps it.
 - **One copy of the plugin per computer.** Two installed plugins named `agent-station`, from
   different marketplaces, do not work side by side. To report to several stations, list them all in
   one copy's `stations` option.

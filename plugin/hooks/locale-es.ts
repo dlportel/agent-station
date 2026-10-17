@@ -81,7 +81,7 @@ const ES: Record<string, string> = {
   'Notice sent to the coordination ("{title}").': 'Aviso enviado a la coordinación («{title}»).',
   'The notice could not be sent: {error}': 'No se pudo enviar el aviso: {error}',
   // the status line
-  'station: no connection': 'estación: sin conexión',
+  'station: no connection ({error})': 'estación: sin conexión ({error})',
   // the permission prompts
   'This agent wants to write to another Claude Code session directly, outside the station. Work between rooms goes through propose_order, which waits for your approval in the station: allow this only if you asked for it.':
     'Este agente quiere escribir directamente a otra sesión de Claude Code, fuera de la estación. El trabajo entre salas pasa por propose_order, que espera tu aprobación en la estación: permítelo solo si se lo has pedido tú.',
@@ -92,6 +92,26 @@ const ES: Record<string, string> = {
   'An agent wants to write to {url}, which cannot be checked for being a station.': 'Un agente quiere escribir en {url}, que no se puede comprobar si es una estación.',
   'an empty URL': 'una URL vacía',
   'An agent wants to write to {url} while a station does not answer, so it cannot be checked for being one of them.': 'Un agente quiere escribir en {url} mientras alguna estación no responde, así que no se puede comprobar si es una de ellas.',
+  // handoffs, in the map and in the notes the dispatcher leaves for the page
+  'each repo of `{group}`': 'cada repo de `{group}`',
+  'The repos of this station are on hosts without handoffs: ask the rooms for work only with `{tool}`.':
+    'Los repos de esta estación están en servidores sin encargos: pide trabajo a las salas solo con `{tool}`.',
+  "Work that has to be followed up, or that may take a while, goes in a handoff: an issue in the repo of the room that has to do it. The station shows every open issue of a room's repo as its handoffs; add the labels your project uses to say who asks, if it has them. If it is urgent, also propose an order with `{tool}` that links the issue. To open it, use the command of that room's repo:":
+    'El trabajo que hay que poder seguir, o que puede tardar, va en un encargo: una issue en el repo de la sala que tiene que hacerlo. La estación muestra como encargos todas las issues abiertas del repo de una sala; añade las etiquetas con las que tu proyecto dice quién lo pide, si las tiene. Si corre prisa, propón además con `{tool}` una orden que enlace la issue. Para abrirla, usa la orden del repo de esa sala:',
+  '{rooms} are on hosts without handoffs: ask them for work only with `{tool}`.': '{rooms} están en servidores sin encargos: pídeles trabajo solo con `{tool}`.',
+  'If the command fails because `gh` or `glab` is not installed or has no login, do not look for another way, and never write a token in a command, file, log or message: tell the user what is missing, and meanwhile ask for the work with `{tool}`, with all its context.':
+    'Si la orden falla porque `gh` o `glab` no están instalados o no tienen login, no busques otra forma, y no escribas nunca un token en una orden, un fichero, un log ni un mensaje: dile al usuario qué falta y, mientras tanto, pide el trabajo con `{tool}`, con todo su contexto.',
+  'Its repo is on {host}, which has no handoffs: only GitHub and GitLab do. Orders reach it as usual.':
+    'Su repo está en {host}, que no tiene encargos: solo los tienen GitHub y GitLab. Las órdenes le llegan igual.',
+  "`{tool}` is not installed on {machine}, so this room's handoffs are not read. Install it, log in and reload the coordination session.":
+    '`{tool}` no está instalado en {machine}, así que los encargos de esta sala no se leen. Instálalo, haz login y recarga la sesión de coordinación.',
+  '`{tool}` has no login for {host} on {machine}. Log in with `{login}`{token} and reload the coordination session.':
+    '`{tool}` no tiene login para {host} en {machine}. Haz login con `{login}`{token} y recarga la sesión de coordinación.',
+  ' (or set GITLAB_TOKEN)': ' (o define GITLAB_TOKEN)',
+  'Agent station: the list of open issues could not be saved ({error}). The boards keep the last list; it is tried again in fifteen minutes.':
+    'Estación de agentes: no se pudo guardar la lista de issues abiertas ({error}). Los tableros mantienen la última lista; se vuelve a intentar dentro de quince minutos.',
+  'Agent station · {rooms}: {problem}': 'Estación de agentes · {rooms}: {problem}',
+  'Its handoffs could not be read ({error}). They are read again in fifteen minutes.': 'No se pudieron leer sus encargos ({error}). Se vuelven a leer dentro de quince minutos.',
 }
 
 // A text in the station's language, with its {placeholders} filled in.

@@ -9,6 +9,11 @@ const STATION = {
     { remote: 'github.com/acme/app-repo', folder: 'app' },
     { remote: 'github.com/acme/coord', folder: 'coord' },
     { remote: 'github.com/acme/legal' },
+    // The same rooms on other hosts, for the handoff tests.
+    { remote: 'gitlab.com/acme/app', folder: 'app' },
+    { remote: 'gitlab.acme.test/team/app', folder: 'app' },
+    { remote: 'gitlab.other.test/team/app', folder: 'app' },
+    { remote: 'bitbucket.org/acme/legal', folder: 'legal' },
   ],
 }
 const REMOTES: Record<string, string> = {
@@ -20,7 +25,7 @@ const REMOTES: Record<string, string> = {
 
 type Doc = { data: Record<string, any>; version: number }
 
-function fakeOfficeDatabase(on: any) {
+function fakeOfficeDatabase(on: any, failWrite: (e: any) => boolean = () => false) {
   const store = new Map<string, Doc>()
   const key = (collection: string, id: string) => `${collection}/${id}`
   const line = (collection: string, id: string) => {
@@ -43,6 +48,7 @@ function fakeOfficeDatabase(on: any) {
         .map(([k2]) => line(e.collection, k2.slice(e.collection.length + 1)))
       return reply(`${lines.length} documents\n${lines.join('\n')}`)
     }
+    if (failWrite(e)) return reply('db write failed (network error)')
     if (existing && e.if_version === undefined) return reply(`db write failed (version_mismatch): ${e.collection}/${e.doc_id} already exists and this write carried no if_version — nothing was written.`)
     if (existing && e.if_version !== existing.version) return reply('db write failed (version_mismatch)')
     if (e.action === 'delete') {
@@ -61,13 +67,14 @@ function fakeOfficeDatabase(on: any) {
 }
 
 // git answers for the folders above; gh, when given, answers issue lists.
-function stubGit(on: any, gh?: (argv: string[]) => any) {
+// git answers from the given remotes; gh and glab, from issueTool.
+function stubGit(on: any, issueTool?: (argv: string[]) => any, remotes: Record<string, string> = REMOTES) {
   on('process.run' as any, (_$: any, e: any) => {
     const argv: string[] = e.argv ?? e
     const path = String(argv[2] ?? '').replace(/\\/g, '/')
-    if (argv[0] === 'git' && argv[3] === 'rev-parse') return { value: REMOTES[path] ? { exitCode: 0, stdout: path + '\n' } : { exitCode: 128, stdout: '' } }
-    if (argv[0] === 'git' && argv[3] === 'remote') return { value: REMOTES[path] ? { exitCode: 0, stdout: REMOTES[path] + '\n' } : { exitCode: 128, stdout: '' } }
-    if (argv[0] === 'gh' && gh) return { value: gh(argv) }
+    if (argv[0] === 'git' && argv[3] === 'rev-parse') return { value: remotes[path] ? { exitCode: 0, stdout: path + '\n' } : { exitCode: 128, stdout: '' } }
+    if (argv[0] === 'git' && argv[3] === 'remote') return { value: remotes[path] ? { exitCode: 0, stdout: remotes[path] + '\n' } : { exitCode: 128, stdout: '' } }
+    if ((argv[0] === 'gh' || argv[0] === 'glab') && issueTool) return { value: issueTool(argv) }
     return { value: { exitCode: 1, stdout: '' } }
   })
 }
@@ -119,6 +126,30 @@ test('an order for an open session switches its model and delivers it', { option
   const sent = mcpCalls.find(c => c.tool === 'send_message' && c.args?.session_id === 'local_app')
   expect(String(sent?.args?.message)).toContain('TEST STATION')
   await clock.advance(60_000)
+})
+
+test('the dispatcher keeps delivering while the coordination session cannot store its own report', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  const statuses: any[] = []
+  stubEngine(on, mcpCalls, [{ sessionId: 'local_app', isArchived: false }], statuses)
+  stubGit(on)
+  let isReportFailing = true
+  const db = fakeOfficeDatabase(on, e => isReportFailing && e.collection === 'sessions' && e.doc_id === 'local_coord')
+  db.seed('sessions', 'local_app', { folder: 'app', machine: 'TESTPC', state: 'idle', lastEventAt: Date.now(), title: 'App' })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10 * 60_000)
+  expect(String(statuses.at(-1))).toContain('station: no connection')
+
+  db.seed('orders', 'late', { text: 'Check your handoffs', folder: 'app', mode: 'any', status: 'pending', createdAt: Date.now() })
+  await clock.advance(60_000)
+  expect(db.read('orders', 'late')?.status).toBe('delivered')
+
+  isReportFailing = false
+  await clock.advance(5 * 60_000)
+  expect(statuses.at(-1)).toEqual({ text: undefined })
+  expect(db.read('sessions', 'local_coord')?.folder).toBe('coord')
 })
 
 test('an order from another room says who asked and that the result goes back with propose_order', { options }, async ($, on) => {
@@ -473,6 +504,26 @@ test('sessions deleted from the app are closed and old closed ones removed', { o
   await clock.advance(60_000)
 })
 
+test('a session deleted from the app while the dispatcher runs is closed within about a minute', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const appSessions = [{ sessionId: 'local_coord', isArchived: false }, { sessionId: 'local_app', isArchived: false }]
+  stubEngine(on, [], appSessions)
+  stubGit(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('sessions', 'local_app', { folder: 'app', machine: 'TESTPC', state: 'idle', lastEventAt: Date.now() })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+  expect(db.read('sessions', 'local_app')?.state).toBe('idle')
+
+  appSessions.splice(1, 1)
+  await clock.advance(65_000)
+
+  expect(db.read('sessions', 'local_app')?.state).toBe('ended')
+  expect(db.read('sessions', 'local_app')?.endReason).toBe('deleted')
+  await clock.advance(60_000)
+})
+
 test('finished orders older than 30 days are removed', { options }, async ($, on) => {
   const clock = mock.clock(on)
   stubEngine(on, [])
@@ -545,6 +596,154 @@ test('the dispatcher lists open handoff issues and notices the ones that closed'
   expect(handoffs?.byFolder?.app?.length).toBe(1)
   expect(handoffs?.byFolder?.app?.[0]?.from).toBe('coord')
   expect(handoffs?.closedRecently?.[0]?.number).toBe(1)
+  await clock.advance(60_000)
+})
+
+test('handoffs of a GitLab repo are read with glab, and a repo on another host gets a note', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [])
+  const remotes = { 'C:/work/coord': 'https://github.com/acme/coord.git', 'C:/work/app': 'git@gitlab.com:acme/app.git', 'C:/work/legal': 'https://bitbucket.org/acme/legal.git' }
+  stubGit(on, argv => {
+    if (argv[0] === 'glab' && argv.includes('--hostname')) return argv.includes('gitlab.com') ? { exitCode: 0, stdout: 'Logged in' } : { exitCode: 1, stdout: '', stderr: 'not logged in' }
+    if (argv[0] === 'glab' && argv.includes('https://gitlab.com/acme/app')) return { exitCode: 0, stdout: JSON.stringify([{ iid: 7, title: 'Add the delta endpoint', web_url: 'https://gitlab.com/acme/app/-/work_items/7', created_at: '2026-10-16T10:00:00Z', labels: ['handoff', 'from-legal'], description: 'The app needs\n\na delta endpoint. ' + 'x'.repeat(400) }]) }
+    return { exitCode: 0, stdout: '[]' }
+  }, remotes)
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('config', 'handoffs', { byFolder: {}, closedRecently: [] })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  const handoffs = db.read('config', 'handoffs')
+  expect(handoffs?.byFolder?.app?.[0]).toEqual({ number: 7, title: 'Add the delta endpoint', url: 'https://gitlab.com/acme/app/-/work_items/7', from: 'legal', createdAt: '2026-10-16T10:00:00Z', excerpt: `The app needs a delta endpoint. ${'x'.repeat(247)}…` })
+  expect(handoffs?.views?.app).toBe('glab issue view <n> -R https://gitlab.com/acme/app')
+  expect(String(handoffs?.problems?.legal)).toContain('bitbucket.org, which has no handoffs')
+  expect(handoffs?.problems?.app).toBeUndefined()
+  await clock.advance(60_000)
+})
+
+test('every open issue is read, except those of a repo set to issues false and of the coordination repo', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [])
+  const listed: string[] = []
+  stubGit(on, argv => {
+    if (argv.includes('list')) listed.push(argv[argv.indexOf('--repo') + 1])
+    return argv.includes('acme/app-repo')
+      ? { exitCode: 0, stdout: JSON.stringify([{ number: 3, title: 'Crash on login', url: 'u3', createdAt: 'x', labels: [{ name: 'bug' }] }]) }
+      : { exitCode: 0, stdout: '[]' }
+  })
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('config', 'departments', { ...STATION, repos: STATION.repos.map(r => r.remote === 'github.com/acme/legal' ? { ...r, issues: false } : r) })
+  db.seed('config', 'handoffs', { byFolder: {}, closedRecently: [] })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  expect(listed).toEqual(['acme/app-repo'])
+  expect(db.read('config', 'handoffs')?.byFolder?.app?.[0]?.title).toBe('Crash on login')
+  await clock.advance(60_000)
+})
+
+test('a room that cannot be read keeps its list, and the others still drop their closed issues', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [])
+  stubGit(on, argv => argv.includes('acme/legal') && argv.includes('list') ? { exitCode: 1, stdout: '', stderr: 'HTTP 502' } : { exitCode: 0, stdout: '[]' })
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('config', 'handoffs', { byFolder: { app: [{ number: 1, title: 'Done', url: 'u1', from: '', createdAt: 'x' }], legal: [{ number: 5, title: 'Clause', url: 'u5', from: '', createdAt: 'x' }] }, closedRecently: [] })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  const handoffs = db.read('config', 'handoffs')
+  expect(handoffs?.byFolder?.app).toBeUndefined()
+  expect(handoffs?.byFolder?.legal?.[0]?.number).toBe(5)
+  expect(handoffs?.closedRecently?.map((c: any) => `${c.folder}#${c.number}`)).toEqual(['app#1'])
+  expect(String(handoffs?.problems?.legal)).toContain('HTTP 502')
+  await clock.advance(60_000)
+})
+
+test('a repo whose issues are turned off drops them without counting them as closed', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [])
+  stubGit(on, () => ({ exitCode: 0, stdout: '[]' }))
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('config', 'departments', { ...STATION, repos: STATION.repos.map(r => r.remote === 'github.com/acme/legal' ? { ...r, issues: false } : r) })
+  db.seed('config', 'handoffs', { byFolder: { legal: [{ number: 5, title: 'Clause', url: 'u5', from: '', createdAt: 'x' }], coord: [{ number: 9, title: 'Map', url: 'u9', from: '', createdAt: 'x' }] }, closedRecently: [] })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  const handoffs = db.read('config', 'handoffs')
+  expect(handoffs?.byFolder?.legal).toBeUndefined()
+  expect(handoffs?.closedRecently).toEqual([])
+  await clock.advance(60_000)
+})
+
+test('a catalog the station refuses is told once, and a version clash not at all', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [])
+  stubGit(on, () => ({ exitCode: 0, stdout: '[]' }))
+  stubFolders(on)
+  const toasts: string[] = []
+  on('ui.toast' as any, (_$: any, e: any) => { toasts.push(String(e?.text ?? e)); return { value: null } })
+  const db = fakeOfficeDatabase(on, e => e.collection === 'config' && e.doc_id === 'handoffs' && e.action === 'set')
+  db.seed('config', 'handoffs', { byFolder: {}, closedRecently: [] })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+  await clock.advance(16 * 60_000)
+
+  expect(toasts.filter(t => t.includes('could not be saved')).length).toBe(1)
+  await clock.advance(60_000)
+})
+
+test('a missing glab is noted once and not asked again at every scan', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [])
+  const calls: string[][] = []
+  stubGit(on, argv => {
+    calls.push(argv)
+    return argv[0] === 'glab' ? { exitCode: 127, stdout: '', stderr: 'glab: command not found' } : { exitCode: 0, stdout: '[]' }
+  }, { 'C:/work/coord': 'https://github.com/acme/coord.git', 'C:/work/app': 'https://gitlab.acme.test/team/app.git' })
+  stubFolders(on)
+  const toasts: string[] = []
+  on('ui.toast' as any, (_$: any, e: any) => { toasts.push(String(e?.text ?? e)); return { value: null } })
+  const db = fakeOfficeDatabase(on)
+  db.seed('config', 'handoffs', { byFolder: {}, closedRecently: [] })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+  await clock.advance(16 * 60_000)
+
+  expect(String(db.read('config', 'handoffs')?.problems?.app)).toContain('`glab` is not installed on TESTPC')
+  expect(calls.filter(argv => argv[0] === 'glab').length).toBe(1)
+  expect(toasts.length).toBe(1)
+  expect(toasts[0]).toContain('Agent station · app: `glab` is not installed on TESTPC')
+  await clock.advance(60_000)
+})
+
+test('glab without a login is told apart from a repo it cannot see', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [])
+  stubGit(on, argv => argv.includes('auth')
+    ? { exitCode: 1, stdout: '', stderr: 'No token found for gitlab.other.test' }
+    : { exitCode: 1, stdout: '', stderr: '404 Not Found' },
+  { 'C:/work/coord': 'https://github.com/acme/coord.git', 'C:/work/app': 'https://gitlab.other.test/team/app.git' })
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('config', 'handoffs', { byFolder: {}, closedRecently: [] })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  const problem = String(db.read('config', 'handoffs')?.problems?.app)
+  expect(problem).toContain('`glab` has no login for gitlab.other.test on TESTPC')
+  expect(problem).toContain('glab auth login --hostname gitlab.other.test')
+  expect(problem).toContain('GITLAB_TOKEN')
   await clock.advance(60_000)
 })
 

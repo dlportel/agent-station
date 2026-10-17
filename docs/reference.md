@@ -38,7 +38,7 @@ moment, not every tool call.
 
 | Field | What it is |
 |---|---|
-| `repos` | The station's repos by origin remote, one per entry: `{ "remote": "github.com/org/repo", "folder": "dept" }` makes that repo the department `dept` (or the repo's own name without `folder`). A remote ending in `/*` takes every repo directly under that group, each as a department named after the repo. |
+| `repos` | The station's repos by origin remote, one per entry: `{ "remote": "github.com/org/repo", "folder": "dept" }` makes that repo the department `dept` (or the repo's own name without `folder`). A remote ending in `/*` takes every repo directly under that group, each as a department named after the repo. `"issues": false` on an entry leaves its repo's issues (or those of every repo of the group) off the station: the dispatcher stops reading them when its session reloads, and the page hides a single repo's at once (a group's rooms follow the dispatcher). |
 | `title` | The station's name, shown on the page and in every order it sends. |
 | `language` | `en` (also when the field is missing) or `es`: the language of everything the station says, to people and to agents. The page, the map each session gets, the orders delivered, the dispatcher's notes on them, the coordination's notes and its command (`/coordinator`, or `/coordinador` in Spanish). The page and the plugin are written in English; the Spanish of each text lives in a dictionary, the page's `ES` and the plugin's `hooks/locale-es.ts`, and a text missing there is said in English. What the station's own config holds (room names, places, deck labels, descriptions) is shown as written. |
 | `theme` | The station's scenery. `space` (stars and planets, from `themes/space.js`) is the default, used when the field is missing or names a theme that is not loaded. A station adds its own themes in a `theme.js` published next to the page (see *Themes* in the README). A theme changes only the scenery, never the robots, the rooms or what the page does. |
@@ -141,10 +141,23 @@ URL and its `aliases`:
   between rooms goes through `propose_order` and its approval. Messages to the session's own
   subagents pass.
 
+The plugin's own station calls (its reports, the dispatcher's work, `propose_order`) never ask
+for permission, in any mode: the plugin approves exactly the `ArtifactData` calls it has in flight
+on its station, and every call of the agent gets the verdict of the session's rules and mode as
+usual. It approves them in the engine's `tool.check` event, with `classic.PreToolUse` as a
+fallback for apps that do not raise it. Approving them in `PreToolUse` alone is not enough: in auto
+mode the call still goes to the classifier, and a classifier that gives no verdict denies it.
+
 A station whose `aliases` were never recorded is guarded only by its main URL, so recording them
 (step 3 of the README's quick start) matters. The plugin only observes: every event is handed on unchanged, writes
-run in the background with a timeout, a failed report is sent again, and after three failures in
-a row it goes quiet for the rest of the session.
+run in the background with a timeout and a failed report is sent again. After three failures in
+a row the status line shows `station: no connection (<error>)` and the report is retried after
+30 s, 1 min, 2 min and then every 5 minutes; the first write that goes through clears the status,
+and the session, and in the coordination session the dispatcher, carry on as before. Every failed
+write, and the reconnection, is written as one line (time, session, room, action, error) to
+`~/.claude/agent-station-logs/<session>.log`, one file per session (so sessions never overwrite each
+other's lines), each keeping its last 200 lines: those files are what to send when a machine keeps
+dropping out of the station.
 
 The plugin runs with the Claude desktop app on **Windows** and **macOS**. It writes paths in the
 machine's own form (`C:\work\app` or `/Users/me/work/app`), finds the user's home in `USERPROFILE`
@@ -169,6 +182,14 @@ same machine), never to another one that happens to start in the room meanwhile.
 claim the same order, it fails rather than going to either. If the card is run in a
 session of another room (for example with "do it here" in the coordination session), that session
 is told the order is not for it and not to carry it out, and the order fails with a note saying so.
+
+Every minute the dispatcher also compares the sessions the station lists for its machine with the
+ones the desktop app still has. A session the app deleted or archived is closed with that reason
+(`endReason`), and the page takes it off the station at once, desk and list row included; a
+session that ended on its own keeps an empty desk for three hours. This only covers the machine
+of the dispatcher, and only while a coordination session is open there: a session deleted on a
+machine without one stays on the station. The same pass deletes session documents closed more
+than 7 days ago; finished orders are deleted after 30 days, checked every five minutes.
 
 An order that is waiting for your click, failed or was delivered can be resent from its detail on
 the page, as it is or with another destination. It goes back to the queue with its attempt number
@@ -206,12 +227,31 @@ saying so, and that code, SQL, email addresses and paths need the ordinary one.
 
 The dispatcher finds the station's repos on its machine next to the coordination repo: every
 sibling folder whose origin remote is in `repos`. It reads their `.claude/agents` into
-`config/agents` when it starts, their open `handoff` issues (GitHub only, with `gh`) into
-`config/handoffs` every fifteen minutes, and it never opens a new session outside them. An open
-handoff, opened from its department's board or from the list on the bridge, has **ASSIGN TO AN
-AGENT**: it opens the order form for that department, filled in with the instruction to handle
-that issue and close it with the commit or PR that resolves it; the user picks the agent, the
-session and the model, and the order keeps the issue it came from (`handoff`).
+`config/agents` when it starts, their open issues (the newest hundred of each repo, whatever their labels) into `config/handoffs` every fifteen
+minutes, and it never opens a new session outside them. Each repo's issues are read with the tool
+of the host in its remote: `gh` for github.com, `glab` for a host with "gitlab" in its name, and,
+for any other host, `glab` too when it has a login for that host (a GitLab of your own under
+another name). A repo on a host that is neither takes only orders. When a room's handoffs cannot
+be read, `config/handoffs.problems` holds why, in the station's language, and the list on the
+bridge shows it: the tool is not installed on the dispatcher's machine, it has no login for that
+host, the host has no handoffs, or listing the repo failed (with the tool's error). A missing tool
+or login also shows as a notice in the coordination session when it is found, and is checked once per host while the dispatcher lives, since neither changes on its own;
+reloading the coordination session checks again. A failed listing is tried again at the next scan,
+and meanwhile the room keeps the handoffs of the last good one. Only the rooms read in a scan count
+for the issues that closed, so a room that cannot be read, or whose issues were turned off, never
+shows its issues as closed. `config/handoffs.views` holds each room's command to read one issue,
+with `<n>` for its number. If the station refuses to save the catalog, the coordination session
+shows a notice once and the boards keep the last list.
+
+The map tells each session how to open a handoff in every room's repo, with the command of that
+repo's host (`gh issue create --repo …` or `glab issue create -R https://…`), names the rooms that
+take only orders, and says that when the tool is missing or has no login the agent tells the user
+and asks for the work with an order meanwhile, never writing a token anywhere. An open handoff,
+opened from its department's board or from the list on the bridge, has **ASSIGN TO AN AGENT**: it
+opens the order form for that department, filled in with the instruction to read the issue with
+its host's command, handle it and close it with the commit or the pull or merge request that
+resolves it; the user picks the agent, the session and the model, and the order keeps the issue it
+came from (`handoff`).
 `/coordinator <message>` sends a note to the station's coordination session on the same machine.
 
 ## What a change reaches

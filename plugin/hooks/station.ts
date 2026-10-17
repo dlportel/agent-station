@@ -7,7 +7,8 @@ import { tx } from './locale-es'
 // URLs, from its `stations` option. Everything that tells one station from
 // another lives in the station's own database, in config/departments.
 
-export type RepoRule = { remote: string; folder?: string }
+// issues: false leaves the repo's issues out of the station's boards.
+export type RepoRule = { remote: string; folder?: string; issues?: boolean }
 
 // What an agent is told about a room: its name and what its agent does.
 export type RoomInfo = { name?: string; description?: string }
@@ -130,8 +131,39 @@ export function stationMap(station: Station, ownFolder: string, proposeTool: str
     '',
     say("Never write to another room's sessions directly (with SendMessage or a session tool): work between rooms goes only through `{tool}`, so that the user approves it.", { tool: proposeTool }),
   )
+  lines.push(...handoffLines(station, proposeTool))
   if (station.coordination) lines.push('', say('The coordination session (`{coordination}`) runs the station and delivers the approved orders, but it is no go-between for the rooms: never write to it to ask for work, return a result or forward anything; that is what `{tool}` is for.', { coordination: station.coordination, tool: proposeTool }))
   return lines.join('\n')
+}
+
+// How to open a handoff in each room's repo, with the command of that repo's
+// host, so a station with repos on GitHub and on GitLab gives each room its own.
+// A room on another host takes only orders.
+function handoffLines(station: Station, proposeTool: string): string[] {
+  const say = (text: string, vars?: Record<string, unknown>) => tx(station.language, text, vars)
+  const commands: string[] = []
+  const without: string[] = []
+  for (const rule of station.repos) {
+    const normalized = normalizeRemote(rule.remote)
+    const isGroup = normalized.endsWith('/*')
+    const folder = isGroup ? '' : rule.folder || normalized.split('/').pop() || ''
+    if (!isGroup && (!folder || folder === station.coordination)) continue
+    const repo = issueRepoOf(isGroup ? `${normalized.slice(0, -2)}/<folder>` : normalized)
+    const label = isGroup ? say('each repo of `{group}`', { group: normalized }) : `\`${folder}\``
+    if (repo?.kind) commands.push(`- ${label}: \`${issueCommand(repo.kind, repo.host, repo.path, 'create')}\``)
+    else without.push(label)
+  }
+  if (!commands.length) return without.length ? ['', say('The repos of this station are on hosts without handoffs: ask the rooms for work only with `{tool}`.', { tool: proposeTool })] : []
+  const lines = [
+    '',
+    say('Work that has to be followed up, or that may take a while, goes in a handoff: an issue in the repo of the room that has to do it. The station shows every open issue of a room\'s repo as its handoffs; add the labels your project uses to say who asks, if it has them. If it is urgent, also propose an order with `{tool}` that links the issue. To open it, use the command of that room\'s repo:', { tool: proposeTool }),
+    ...commands,
+  ]
+  if (without.length) lines.push(say('{rooms} are on hosts without handoffs: ask them for work only with `{tool}`.', { rooms: without.join(', '), tool: proposeTool }))
+  lines.push(
+    say('If the command fails because `gh` or `glab` is not installed or has no login, do not look for another way, and never write a token in a command, file, log or message: tell the user what is missing, and meanwhile ask for the work with `{tool}`, with all its context.', { tool: proposeTool }),
+  )
+  return lines
 }
 
 // What the coordination session reads beside a message from another session:
@@ -177,6 +209,11 @@ export function isDirectSessionMessage(tool: string, input: any): boolean {
 // folder (or the repo's own name), and a remote ending in /* takes every repo
 // under that path, each as a department named after the repo.
 export function folderForRemote(remote: string, repos: RepoRule[]): string | undefined {
+  return ruleForRemote(remote, repos)?.folder
+}
+
+// The rule of repos that takes a remote, with the folder it gives it.
+export function ruleForRemote(remote: string, repos: RepoRule[]): { rule: RepoRule; folder: string } | undefined {
   const normalized = normalizeRemote(remote)
   if (!normalized) return undefined
   for (const rule of repos) {
@@ -184,9 +221,10 @@ export function folderForRemote(remote: string, repos: RepoRule[]): string | und
     if (pattern.endsWith('/*')) {
       const prefix = pattern.slice(0, -1)
       const rest = normalized.startsWith(prefix) ? normalized.slice(prefix.length) : ''
-      if (rest && !rest.includes('/')) return rule.folder || rest
+      if (rest && !rest.includes('/')) return { rule, folder: rule.folder || rest }
     } else if (pattern === normalized) {
-      return rule.folder || normalized.split('/').pop()
+      const folder = rule.folder || normalized.split('/').pop()
+      return folder ? { rule, folder } : undefined
     }
   }
   return undefined
@@ -203,6 +241,30 @@ export function normalizeRemote(remote: string): string {
     .replace(/^([^/:]+):\d+\//, '$1/')
     .replace(/\/+$/, '')
     .replace(/\.git$/, '')
+}
+
+// Where a repo's handoff issues live, from its remote alone: github.com is read
+// with gh, a host with "gitlab" in its name with glab. Any other host is left
+// for the dispatcher to ask glab about (a GitLab of its own under another name).
+export type IssueKind = 'github' | 'gitlab'
+export function issueRepoOf(remote: string): { host: string; path: string; kind?: IssueKind } | undefined {
+  const normalized = normalizeRemote(remote)
+  const slash = normalized.indexOf('/')
+  const host = normalized.slice(0, slash), path = normalized.slice(slash + 1)
+  if (slash < 1 || !path.includes('/') || path.includes('*')) return undefined
+  const kind = host === 'github.com' ? 'github' : /(^|[.-])gitlab([.-]|$)/.test(host) ? 'gitlab' : undefined
+  return { host, path, kind }
+}
+
+// The command that opens or reads a handoff issue in a repo, for the map and
+// the page. glab takes the repo as a full URL, which also works for a GitLab
+// of its own.
+export function issueCommand(kind: IssueKind, host: string, path: string, verb: 'create' | 'view' | 'list'): string {
+  if (kind === 'github') {
+    return { create: `gh issue create --repo ${path} --title "…" --body "…"`, view: `gh issue view <n> --repo ${path}`, list: `gh issue list --repo ${path}` }[verb]
+  }
+  const repo = `https://${host}/${path}`
+  return { create: `glab issue create -R ${repo} --title "…" --description "…"`, view: `glab issue view <n> -R ${repo}`, list: `glab issue list -R ${repo}` }[verb]
 }
 
 export async function readOriginRemote(io: EngineIo, path: string): Promise<string | undefined> {

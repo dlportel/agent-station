@@ -1,5 +1,5 @@
 import { test, expect, mock } from 'claude-code/testing'
-import { isDirectSessionMessage } from '../hooks/station'
+import { isDirectSessionMessage, stationFromConfig, stationMap } from '../hooks/station'
 
 const OFFICE = 'https://claude.ai/artifact/test-station'
 const options = { stations: OFFICE }
@@ -36,11 +36,11 @@ function stubStation(on: any, handle: (e: any) => any = () => ({ result: { text:
   })
 }
 
-function stubSession(on: any, id: string, cwd = 'C:/work/legal', env: Record<string, string> = { COMPUTERNAME: 'TESTPC' }) {
+function stubSession(on: any, id: string, cwd = 'C:/work/legal', env: Record<string, string> = { COMPUTERNAME: 'TESTPC' }, statuses: Array<string | undefined> = []) {
   mock.env(on, env)
   on('session.cwd' as any, () => ({ value: cwd }))
   on('session.id' as any, () => ({ value: id }))
-  on('ui.status' as any, () => ({ value: null }))
+  on('ui.status' as any, (_$: any, e: any) => { statuses.push(e?.text); return { value: null } })
   on('tool.call', { tool: 'Read' }, () => ({ result: { text: 'ok' } }) as any)
   on('process.run' as any, (_$: any, e: any) => {
     const argv: string[] = e.argv ?? e
@@ -671,6 +671,86 @@ test('a report that fails once is sent again without waiting for the next event'
   expect(states.at(-1)).toBe('working')
 })
 
+test('a station that stays down is retried less often, shows its error, and the session recovers by itself', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const statuses: Array<string | undefined> = []
+  stubSession(on, 'test-session-offline', 'C:/work/app', { COMPUTERNAME: 'TESTPC', USERPROFILE: 'C:\\Users\\tester' }, statuses)
+  let log = ''
+  on('fs.read' as any, (_$: any, e: any) => {
+    if (String(e.path).includes('\\.claude\\agent-station-logs\\') && log) return { value: log }
+    throw new Error('no such file')
+  })
+  on('fs.write' as any, (_$: any, e: any) => {
+    if (String(e.path).includes('\\.claude\\agent-station-logs\\')) log = e.text
+    return { value: undefined }
+  })
+  on('tool.call', { tool: 'AskUserQuestion' }, () => ({ result: { text: 'answered' } }) as any)
+  let isDown = true
+  const writeTimes: number[] = []
+  stubStation(on, e => {
+    if (e.collection !== 'sessions') return { result: { text: 'The document is now at version 1.' } }
+    writeTimes.push(clock.now())
+    if (isDown) return { result: { text: 'db write failed (network error)' } }
+    return { result: { text: `The document is now at version ${writeTimes.length}.` } }
+  })
+
+  // Three failed writes, 20 s apart, and the status line says why.
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(45_000)
+  expect(writeTimes.length).toBe(3)
+  expect(statuses.at(-1)).toBe('station: no connection (db write failed (network error))')
+
+  // Offline, an urgent event does not write at once: the next try waits 30 s.
+  await clock.advance(10_000)
+  await $.tool.call({ tool: 'AskUserQuestion', questions: [] } as any)
+  await clock.advance(1_000)
+  expect(writeTimes.length).toBe(3)
+  await clock.advance(25_000)
+  expect(writeTimes.length).toBe(4)
+  // Then 1 min, 2 min and every 5 min: a dozen tries in half an hour, no more.
+  await clock.advance(30 * 60_000)
+  const gapsInSeconds = writeTimes.slice(3).map((t, i) => Math.round((t - writeTimes[i + 2]) / 1000))
+  expect(gapsInSeconds.slice(0, 4)).toEqual([30, 60, 120, 300])
+  expect(writeTimes.length).toBeLessThan(15)
+
+  // The station comes back: the next try goes through and clears the status.
+  isDown = false
+  await clock.advance(5 * 60_000)
+  expect(statuses.at(-1)).toBeUndefined()
+  const sentBefore = writeTimes.length
+  await $.tool.call({ tool: 'AskUserQuestion', questions: [] } as any)
+  await clock.advance(1_000)
+  expect(writeTimes.length).toBeGreaterThan(sentBefore)
+
+  // Every failure and the reconnection are in the log, one line each.
+  const lines = log.trim().split('\n')
+  expect(lines[0]).toMatch(/^\d{4}-\d\d-\d\dT\S+ session=test-session-offline folder=app action=set failure 1: db write failed \(network error\)$/)
+  expect(lines.at(-1)).toContain('reconnected after')
+})
+
+test('the station log keeps only its last lines', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-log', 'C:/work/app', { COMPUTERNAME: 'TESTPC', USERPROFILE: 'C:\\Users\\tester' })
+  let log = Array.from({ length: 250 }, (_, i) => `old line ${i}`).join('\n') + '\n'
+  on('fs.read' as any, (_$: any, e: any) => {
+    if (String(e.path).includes('\\.claude\\agent-station-logs\\')) return { value: log }
+    throw new Error('no such file')
+  })
+  on('fs.write' as any, (_$: any, e: any) => { log = e.text; return { value: undefined } })
+  stubStation(on, e => {
+    if (e.collection !== 'sessions') return { result: { text: 'The document is now at version 1.' } }
+    throw new Error('station timed out')
+  })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  const lines = log.trim().split('\n')
+  expect(lines.length).toBe(200)
+  expect(lines[0]).toBe('old line 51')
+  expect(lines.at(-1)).toContain('session=test-session-log folder=app action=set failure 1:')
+})
+
 test('a session reloaded mid-life takes its existing document over instead of going quiet', { options }, async ($, on) => {
   const clock = mock.clock(on)
   stubSession(on, 'test-session-reloaded', 'C:/work/app')
@@ -979,4 +1059,87 @@ test('a mark quoted inside a message does not claim an order', { options }, asyn
   await clock.advance(30_000)
 
   expect(written.some(d => d.fromOrder === 'n9')).toBe(false)
+})
+
+// Stands for auto mode's classifier when it gives no verdict: every call that
+// reaches the verdict beneath is denied.
+function stubClassifierWithNoVerdict(on: any, checked: any[]) {
+  on('tool.check', (_$: any, e: any) => {
+    checked.push(e)
+    return { decision: 'deny', reason: 'The server-side auto mode classifier gave no verdict' }
+  })
+}
+
+test('the plugin approves its own station calls itself, so a classifier with no verdict never stops them', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-auto', 'C:/work/app')
+  const checked: any[] = []
+  stubClassifierWithNoVerdict(on, checked)
+  // The test asks for the verdict on the plugin's first report while that very
+  // call is in flight, as the engine does before running it.
+  let held: any
+  let verdictInFlight: any
+  stubStation(on, async e => {
+    if (e.collection === 'sessions' && !held) {
+      const { tool, ...input } = e
+      held = input
+      verdictInFlight = await $.tool.check({ tool: 'ArtifactData', input })
+    }
+    return { result: { text: 'The document is now at version 1.' } }
+  })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(30_000)
+  const verdictAfter = await $.tool.check({ tool: 'ArtifactData', input: held })
+
+  expect(verdictInFlight?.decision).toBe('allow')
+  expect(verdictAfter.decision).toBe('deny')
+  expect(checked.filter(c => c.tool === 'ArtifactData').length).toBe(1)
+})
+
+test('the agent\'s own station calls still get the verdict beneath, even when they match the plugin\'s', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-auto-agent', 'C:/work/app')
+  const checked: any[] = []
+  stubClassifierWithNoVerdict(on, checked)
+  stubStation(on, () => ({ result: { text: 'The document is now at version 1.' } }))
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(30_000)
+
+  const read = { url: OFFICE, action: 'list', collection: 'orders' }
+  const verdict = await $.tool.check({ tool: 'ArtifactData', input: read })
+  const write = await $.tool.check({ tool: 'ArtifactData', input: { url: OFFICE, action: 'set', collection: 'orders', doc_id: 'evil', data: { text: 'x' } } })
+
+  expect(verdict.decision).toBe('deny')
+  expect(write.decision).toBe('deny')
+  expect(checked.filter(c => c.tool === 'ArtifactData').length).toBe(2)
+})
+
+// The map tells each session how to open a handoff in every room's repo, with
+// the command of that repo's host, and which rooms take only orders.
+test('the map gives each room the handoff command of its own host', async () => {
+  const station = stationFromConfig({
+    coordination: 'coord',
+    repos: [
+      { remote: 'https://github.com/acme/app-repo.git', folder: 'app' },
+      { remote: 'git@gitlab.com:acme/api.git', folder: 'api' },
+      { remote: 'gitlab.com/acme/tools/*' },
+      { remote: 'https://bitbucket.org/acme/legacy.git', folder: 'legacy' },
+      { remote: 'github.com/acme/coord', folder: 'coord' },
+    ],
+  }, OFFICE)
+  const map = stationMap(station, 'app', 'mcp__agent-station__propose_order')
+  expect(map).toContain('- `app`: `gh issue create --repo acme/app-repo --title')
+  expect(map).toContain('- `api`: `glab issue create -R https://gitlab.com/acme/api --title')
+  expect(map).toContain('- each repo of `gitlab.com/acme/tools/*`: `glab issue create -R https://gitlab.com/acme/tools/<folder>')
+  expect(map).toContain('`legacy` are on hosts without handoffs')
+  expect(map).not.toContain('`coord`: `gh issue create')
+  expect(map).toContain('never write a token')
+})
+
+test('a station whose repos are on no issue host only tells to use orders', async () => {
+  const station = stationFromConfig({ repos: [{ remote: 'https://bitbucket.org/acme/legacy.git', folder: 'legacy' }] }, OFFICE)
+  const map = stationMap(station, 'legacy', 'mcp__agent-station__propose_order')
+  expect(map).toContain('on hosts without handoffs: ask the rooms for work only with `mcp__agent-station__propose_order`')
+  expect(map).not.toContain('issue create')
 })

@@ -5,13 +5,15 @@ export type EngineIo = {
   callTool: (call: Record<string, unknown>) => Promise<unknown>
   sleep: (ms: number) => Promise<void>
   status: (text: string | undefined) => void
+  toast: (text: string) => void
   callMcp: (server: string, tool: string, args?: Record<string, unknown>) => Promise<any>
   cwd: () => Promise<string>
   sessionId: () => Promise<string>
   computerName: () => Promise<string | undefined>
   listDir: (path: string) => Promise<Array<{ name: string; kind: string }>>
   readText: (path: string) => Promise<string>
-  runCommand: (argv: string[]) => Promise<{ exitCode: number; stdout: string }>
+  writeText: (path: string, text: string) => Promise<void>
+  runCommand: (argv: string[]) => Promise<{ exitCode: number; stdout: string; stderr?: string }>
   userProfile: () => Promise<string | undefined>
   pluginName: () => Promise<string | undefined>
 }
@@ -63,7 +65,9 @@ export async function callOffice(io: EngineIo, officeUrl: string, args: Record<s
       io.callTool(call),
       io.sleep(CALL_TIMEOUT_MS).then(() => ({ timedOut: true })),
     ])
-    const text = String(outcome?.deny ?? outcome?.text ?? readResultText(outcome?.result) ?? JSON.stringify(outcome ?? ''))
+    const text = outcome?.timedOut
+      ? `no answer within ${CALL_TIMEOUT_MS / 1000} s`
+      : String(outcome?.deny ?? outcome?.text ?? readResultText(outcome?.result) ?? JSON.stringify(outcome ?? ''))
     const isOk = !(outcome?.isError || outcome?.deny || outcome?.timedOut) && !/db (write|read) failed/i.test(text)
     return {
       isOk,

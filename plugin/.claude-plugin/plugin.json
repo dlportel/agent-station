@@ -1,6 +1,6 @@
 {
   "name": "agent-station",
-  "version": "1.2.3",
+  "version": "1.2.13",
   "description": "Gives every Claude Code session a map of the station's agents and lets them propose work to each other, with the user's approval, while each session shows on the station page",
   "author": {
     "name": "Amn"

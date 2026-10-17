@@ -5,8 +5,10 @@ import { coordinationPeerNote, folderForRemote, joinPath, LANGS, readOriginRemot
 import { tx } from './locale-es'
 
 // Observer only: every hook hands the event on unchanged and never waits on
-// the station. Writes run in the background, time out, and after repeated
-// failures the mod goes quiet for the rest of the session.
+// the station. Writes run in the background and time out. After repeated
+// failures the session shows the last error in the status line, logs it to
+// ~/.claude/agent-station-logs/<session>.log and keeps trying, less often,
+// until a write goes through.
 //
 // The plugin serves the stations listed in its `stations` option. A session
 // belongs to the first of them whose repos (config/departments.repos) include
@@ -17,6 +19,14 @@ type SessionState = 'working' | 'waiting' | 'idle' | 'ended'
 
 const MIN_WRITE_GAP_MS = 20_000
 const MAX_CONSECUTIVE_FAILURES = 3
+// Once the station counts as unreachable, its report is sent again after 30 s,
+// 1, 2 and then every 5 minutes, whatever the session does meanwhile.
+const OFFLINE_RETRY_MS = [30_000, 60_000, 2 * 60_000, 5 * 60_000]
+const STATUS_ERROR_MAX = 60
+const LOG_ERROR_MAX = 300
+// The log keeps its last lines only, so it never grows past a few dozen KB.
+const LOG_MAX_LINES = 200
+const LOG_FOLDER = 'agent-station-logs'
 // A station that did not answer is asked again at once, then after 1, 5 and 15 minutes.
 const STATION_RETRY_MS = [0, 60_000, 5 * 60_000, 15 * 60_000]
 const QUESTION_TOOLS = new Set(['AskUserQuestion'])
@@ -58,6 +68,8 @@ const ORDER_MODES = new Set(['any', 'existing', 'new'])
 const ORDER_TEXT_MAX = 20_000
 const ORDER_REASON_MAX = 1_000
 const MAP_WAIT_MS = 8_000
+// How long a notice for the user stays on screen.
+const TOAST_MS = 30_000
 
 type Membership = { station: Station; folder: string }
 // Each configured station's config, in the order of the option (undefined: it did not answer).
@@ -341,8 +353,19 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // The mod's own station calls must never open a permission dialog; the
-  // agent's calls go through the normal permission flow. A write the guard
+  // The mod's own station calls are approved at tool.check, which settles the
+  // verdict before the mode's decider: an allow from PreToolUse does not keep
+  // auto mode from sending the call to its classifier, which denies it when it
+  // gives no verdict. Only a station call the mod itself has in flight is
+  // approved; the agent's calls get the verdict beneath.
+  on('tool.check', { tool: 'ArtifactData' }, ($, e, next) => {
+    const isOwnOfficeCall = isOwnCall(e.input) && isOfficeCall(allKeys, e.tool, e.input)
+    return isOwnOfficeCall ? { decision: 'allow', reason: 'The agent-station plugin reporting to its station' } : next(e)
+  })
+
+  // The mod's own station calls must never open a permission dialog, also on
+  // an app that does not raise tool.check; the agent's calls go through the
+  // normal permission flow. A write the guard
   // cannot place (a URL it does not recognise, or an alias of a station that
   // has not answered yet) asks the user instead of passing silently.
   on('classic.PreToolUse', ($, e, next) => {
@@ -596,9 +619,15 @@ export const register: Register = (on, options) => {
     scheduleWrite(isUrgent)
   }
 
+  // While the station is unreachable, nothing is urgent: the report waits for
+  // the next retry, so a busy session does not hammer a station that is down.
   function scheduleWrite(isUrgent: boolean) {
     if (!io || isWriting) return
-    const waitMs = isUrgent ? 0 : Math.max(0, MIN_WRITE_GAP_MS - (Date.now() - lastWriteAt))
+    const isOffline = consecutiveFailures >= MAX_CONSECUTIVE_FAILURES
+    const gapMs = isOffline
+      ? OFFLINE_RETRY_MS[Math.min(consecutiveFailures - MAX_CONSECUTIVE_FAILURES, OFFLINE_RETRY_MS.length - 1)]
+      : MIN_WRITE_GAP_MS
+    const waitMs = isUrgent && !isOffline ? 0 : Math.max(0, gapMs - (Date.now() - lastWriteAt))
     if (waitMs === 0) {
       void flushReportToOffice()
       return
@@ -617,19 +646,22 @@ export const register: Register = (on, options) => {
     try {
       while (hasUnsentChanges && isReporting) {
         hasUnsentChanges = false
-        const isWritten = await writeReportToOffice({ ...report })
+        const failure = await writeReportToOffice({ ...report })
         lastWriteAt = Date.now()
-        if (isWritten) {
-          if (consecutiveFailures > 0) io?.status(undefined)
+        if (!failure) {
+          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            io?.status(undefined)
+            logStationEvent('set', `reconnected after ${consecutiveFailures} failed writes`)
+          }
           consecutiveFailures = 0
           continue
         }
         // Keep the report: the next write sends it, or the retry below.
         hasUnsentChanges = true
         consecutiveFailures++
+        logStationEvent(failure.action, `failure ${consecutiveFailures}: ${failure.error}`)
         if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-          isReporting = false
-          io?.status(tx(station?.language, 'station: no connection'))
+          io?.status(tx(station?.language, 'station: no connection ({error})', { error: shortError(failure.error, STATUS_ERROR_MAX) }))
         }
         break
       }
@@ -639,23 +671,57 @@ export const register: Register = (on, options) => {
     if (hasUnsentChanges && isReporting) scheduleWrite(false)
   }
 
-  async function writeReportToOffice(data: Record<string, unknown>): Promise<boolean> {
-    if (!io) return false
+  // Undefined once the report is stored; otherwise the call that failed and
+  // the station's reply to it.
+  async function writeReportToOffice(data: Record<string, unknown>): Promise<{ action: string; error: string } | undefined> {
+    if (!io) return { action: 'set', error: 'no engine' }
     const target = { collection: 'sessions', doc_id: docId }
     const first = await callOffice(io, officeUrl, { action: 'set', ...target, data, if_version: version })
     if (first.version !== undefined) {
       version = first.version
-      return true
+      return undefined
     }
-    if (!first.isVersionMismatch) return false
+    if (!first.isVersionMismatch) return { action: 'set', error: first.text }
     const current = await callOffice(io, officeUrl, { action: 'get', ...target })
     const currentVersion = current.isOk ? parseDocs(current.text)[0]?.version : undefined
-    if (currentVersion === undefined) return false
+    if (currentVersion === undefined) return { action: 'get', error: current.text }
     const retry = await callOffice(io, officeUrl, { action: 'set', ...target, data, if_version: currentVersion })
-    if (retry.version === undefined) return false
+    if (retry.version === undefined) return { action: 'set', error: retry.text }
     version = retry.version
-    return true
+    return undefined
   }
+
+  // One line per event in ~/.claude/agent-station-logs/<session>.log, which
+  // keeps its last LOG_MAX_LINES lines, so a user can send it when the station
+  // keeps losing the session. Each session has its own file, since a file can
+  // only be rewritten whole and two sessions would overwrite each other's
+  // lines. Writes are chained, and a log that cannot be written is let go.
+  let logWrite: Promise<void> = Promise.resolve()
+  function logStationEvent(action: string, message: string) {
+    const engine = io
+    if (!engine) return
+    const line = [
+      new Date().toISOString(),
+      `session=${docId || '-'}`,
+      `folder=${String(report.folder || '-')}`,
+      `action=${action}`,
+      shortError(message, LOG_ERROR_MAX),
+    ].join(' ')
+    logWrite = logWrite.then(async () => {
+      const home = await engine.userProfile()
+      if (!home) return
+      const path = joinPath(home, '.claude', LOG_FOLDER, `${docId || 'unknown'}.log`)
+      const previous = await engine.readText(path).catch(() => '')
+      const lines = [...previous.split(/\r?\n/).filter(Boolean), line].slice(-LOG_MAX_LINES)
+      await engine.writeText(path, lines.join('\n') + '\n')
+    }).catch(() => {})
+  }
+}
+
+// An error on one line, cut to `max` characters.
+function shortError(text: string, max: number): string {
+  const line = String(text ?? '').replace(/\s+/g, ' ').trim() || 'no reply'
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line
 }
 
 // The `stations` option as `claude plugin configure` stored it in the user
@@ -684,6 +750,7 @@ function engineIoFor($: any, callToolAsMod: (callTool: (call: any) => Promise<un
     callTool: call => callToolAsMod(c => $.tool.call(c as any), call),
     sleep: ms => $.clock.sleep(ms),
     status: text => $.ui.status(text),
+    toast: text => $.ui.toast(text, { timeoutMs: TOAST_MS }),
     callMcp: (server, tool, args) => $.mcp.call(server, tool, args),
     cwd: () => $.session.cwd(),
     sessionId: () => $.session.id(),
@@ -692,7 +759,8 @@ function engineIoFor($: any, callToolAsMod: (callTool: (call: any) => Promise<un
     computerName: async () => (await $.env.get('COMPUTERNAME')) ?? (await $.env.get('HOSTNAME')) ?? await hostnameOf($),
     listDir: path => $.fs.list(path),
     readText: async path => String(await $.fs.read(path)),
-    runCommand: async argv => { const r: any = await $.process.run(argv, { timeoutMs: 30000 }); return { exitCode: Number(r?.exitCode ?? 1), stdout: String(r?.stdout ?? '') } },
+    writeText: (path, text) => $.fs.write(path, text),
+    runCommand: async argv => { const r: any = await $.process.run(argv, { timeoutMs: 30000 }); return { exitCode: Number(r?.exitCode ?? 1), stdout: String(r?.stdout ?? ''), stderr: String(r?.stderr ?? '') } },
     userProfile: async () => (await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')),
     pluginName: async () => $.plugin.name,
   }

@@ -1,5 +1,5 @@
 import { callOffice, mcpText, parseDocs, type EngineIo, type OfficeDoc } from './office'
-import { folderForRemote, joinPath, orderClaim, orderMark, parentOf, readMainRepoTop, readOriginRemote, type Station } from './station'
+import { issueCommand, issueRepoOf, joinPath, orderClaim, orderMark, parentOf, readMainRepoTop, readOriginRemote, ruleForRemote, type IssueKind, type Station } from './station'
 import { tx } from './locale-es'
 
 // Delivers the orders written in the station to this machine's sessions. One
@@ -18,7 +18,8 @@ export type DispatcherContext = {
   isAlive: () => boolean
 }
 
-type LocalRepo = { path: string; remote: string }
+// showsIssues is false for a repo whose rule says issues: false.
+type LocalRepo = { path: string; remote: string; showsIssues: boolean }
 
 const localReposByContext = new WeakMap<DispatcherContext, Promise<Map<string, LocalRepo>>>()
 
@@ -46,8 +47,8 @@ async function scanLocalRepos(context: DispatcherContext): Promise<Map<string, L
     if (entry.kind !== 'dir' || entry.name.startsWith('.') || entry.name.startsWith('_')) continue
     const path = joinPath(parent, entry.name)
     const remote = await readOriginRemote(context.io, path)
-    const folder = remote ? folderForRemote(remote, context.station.repos) : undefined
-    if (folder && remote && !repos.has(folder)) repos.set(folder, { path, remote })
+    const match = remote ? ruleForRemote(remote, context.station.repos) : undefined
+    if (match && remote && !repos.has(match.folder)) repos.set(match.folder, { path, remote, showsIssues: match.rule.issues !== false })
   }
   return repos
 }
@@ -57,7 +58,10 @@ const POLL_MS = 30_000
 // it over once it is older than LEASE_MS, so renewals have slack to fail.
 const LEASE_MS = 5 * 60_000
 const LEASE_RENEW_MS = 2 * 60_000
-const RECONCILE_EVERY_POLLS = 10
+// Sessions the app deleted or archived are closed within a minute; old orders
+// are cleaned up every five.
+const RECONCILE_EVERY_POLLS = 2
+const OLD_ORDERS_EVERY_POLLS = 10
 const HANDOFFS_EVERY_POLLS = 30
 const CLOSED_HANDOFF_KEEP_MS = 24 * 60 * 60_000
 const SESSION_LIST_LIMIT = 200
@@ -83,10 +87,8 @@ export function startDispatcherInBackground(context: DispatcherContext) {
             await syncAgentCatalog(context)
           }
           if (polls % HANDOFFS_EVERY_POLLS === 0) await syncHandoffs(context)
-          if (polls % RECONCILE_EVERY_POLLS === 0) {
-            await reconcileSessions(context)
-            await removeOldOrders(context)
-          }
+          if (polls % RECONCILE_EVERY_POLLS === 0) await reconcileSessions(context)
+          if (polls % OLD_ORDERS_EVERY_POLLS === 0) await removeOldOrders(context)
           const open = await queryOrders(context, ['pending', 'needs_click'])
           await deliverPendingOrders(context, open.filter(order => order.data.status === 'pending'))
           await completeSpawnedOrders(context, open.filter(order => order.data.status === 'needs_click'))
@@ -178,55 +180,174 @@ function readFrontmatter(text: string): Record<string, string> {
   return meta
 }
 
-// Open handoff issues of every GitHub repo of the station, for the department
-// mailboxes, and the ones that closed since the last scan, for the station to
-// celebrate. Uses the machine's gh, every fifteen minutes.
+// What keeps a host's handoffs from being read on this machine, worked out
+// once per host for the dispatcher's life: the tool is missing or has no login.
+// Neither changes on its own, so it is not asked again every fifteen minutes;
+// reloading the coordination session, after installing or logging in, asks
+// again. A failure to list one repo is not kept: the next scan tries it again.
+// isNew says the problem was found just now, so the user is told once.
+const hostProblems = new Map<string, string | null>()
+// The newest open issues read from each repo.
+const ISSUES_PER_REPO = 100
+async function issueHostProblem(context: DispatcherContext, kind: IssueKind, host: string): Promise<{ problem: string | null; isNew: boolean }> {
+  const key = `${context.officeUrl}|${kind}|${host}`
+  if (hostProblems.has(key)) return { problem: hostProblems.get(key) ?? null, isNew: false }
+  const tool = kind === 'github' ? 'gh' : 'glab'
+  const status = await runQuietly(context, [tool, 'auth', 'status', '--hostname', host])
+  const login = `${tool} auth login${host === 'github.com' || host === 'gitlab.com' ? '' : ` --hostname ${host}`}`
+  const problem = status.isMissing
+    ? say(context, "`{tool}` is not installed on {machine}, so this room's handoffs are not read. Install it, log in and reload the coordination session.", { tool, machine: context.machine })
+    : status.exitCode !== 0
+      ? say(context, '`{tool}` has no login for {host} on {machine}. Log in with `{login}`{token} and reload the coordination session.', { tool, host, machine: context.machine, login, token: kind === 'gitlab' ? say(context, ' (or set GITLAB_TOKEN)') : '' })
+      : null
+  hostProblems.set(key, problem)
+  return { problem, isNew: !!problem }
+}
+
+// A host whose name does not say what it is may be a GitLab of its own:
+// glab knows it when it has a login for it. Asked once per host.
+const probedHosts = new Map<string, IssueKind | undefined>()
+async function probeGitLabHost(context: DispatcherContext, host: string): Promise<IssueKind | undefined> {
+  if (!probedHosts.has(host)) {
+    const status = await runQuietly(context, ['glab', 'auth', 'status', '--hostname', host])
+    probedHosts.set(host, status.exitCode === 0 ? 'gitlab' : undefined)
+  }
+  return probedHosts.get(host)
+}
+
+// A command that may not exist on this machine: a missing tool comes back as
+// isMissing instead of an exception. A command that could not be started at
+// all (other than one that timed out) is a missing tool; one that ran counts as missing only when the shell
+// says so naming the tool, so a tool's own error (a missing config file) is
+// not taken for it.
+const MISSING_TOOL = /not recognized|command not found|enoent/i
+async function runQuietly(context: DispatcherContext, argv: string[]): Promise<{ exitCode: number; stdout: string; stderr: string; isMissing: boolean }> {
+  try {
+    const reply = await context.io.runCommand(argv)
+    const stderr = String(reply.stderr ?? '')
+    const isMissing = reply.exitCode === 127 || reply.exitCode === 9009 || (!reply.stdout && MISSING_TOOL.test(stderr) && stderr.includes(argv[0]))
+    return { exitCode: reply.exitCode, stdout: reply.stdout, stderr, isMissing }
+  } catch (error) {
+    const message = String((error as Error)?.message ?? error)
+    return { exitCode: -1, stdout: '', stderr: message, isMissing: !/timed? ?out/i.test(message) }
+  }
+}
+
+// The first line of a tool's error that says something.
+function firstLine(text: string): string {
+  return String(text ?? '').split(/\r?\n/).map(line => line.trim()).find(line => line && line !== 'ERROR') ?? ''
+}
+
+// The open issues of every repo of the station, its handoffs for the
+// department mailboxes, and the ones that closed since the last scan, for the
+// station to celebrate. Every fifteen minutes, each repo with the tool of its
+// host: gh for GitHub, glab for GitLab. A repo whose rule says issues: false is
+// left out, and so is the coordination repo, which has no room. A room whose
+// handoffs cannot be read gets a note saying why, which the page shows instead
+// of an empty board, and keeps the list of its last good read. Only the rooms
+// read now count for the closed ones, so a room left out or unreadable never
+// shows its issues as closed. `views` holds each room's command to read one
+// issue, with <n> for its number.
+type Handoff = { number: number; title: string; url: string; from: string; createdAt: string; excerpt: string }
+// The start of an issue's description kept for the page, on one line, so the
+// catalog of a hundred issues per repo stays small.
+const EXCERPT_MAX = 280
+function excerptOf(text: unknown): string {
+  const line = String(text ?? '').replace(/\s+/g, ' ').trim()
+  return line.length > EXCERPT_MAX ? `${line.slice(0, EXCERPT_MAX - 1)}…` : line
+}
 async function syncHandoffs(context: DispatcherContext) {
   const repos = await localRepos(context)
   if (!repos.size) return
-  const byFolder: Record<string, Array<{ number: number; title: string; url: string; from: string; createdAt: string }>> = {}
-  let isComplete = true
+  const byFolder: Record<string, Handoff[]> = {}
+  const views: Record<string, string> = {}
+  const problems: Record<string, string> = {}
+  // The rooms read now, and those that could not be read now.
+  const read = new Set<string>()
+  const unreadable = new Set<string>()
+  // A missing tool or login found in this scan, with the rooms it leaves
+  // without handoffs, for the notice in the coordination session.
+  const newProblems = new Map<string, string[]>()
   for (const [folder, local] of repos) {
+    if (!local.showsIssues || folder === context.station.coordination) continue
+    const repo = issueRepoOf(local.remote)
+    const kind = repo && (repo.kind ?? await probeGitLabHost(context, repo.host))
+    if (!repo || !kind) {
+      problems[folder] = say(context, 'Its repo is on {host}, which has no handoffs: only GitHub and GitLab do. Orders reach it as usual.', { host: repo?.host ?? local.remote })
+      continue
+    }
+    const { problem: hostProblem, isNew } = await issueHostProblem(context, kind, repo.host)
+    if (hostProblem) {
+      problems[folder] = hostProblem
+      if (isNew || newProblems.has(hostProblem)) newProblems.set(hostProblem, [...(newProblems.get(hostProblem) ?? []), folder])
+      unreadable.add(folder)
+      continue
+    }
+    const listed = await runQuietly(context, kind === 'github'
+      ? ['gh', 'issue', 'list', '--repo', repo.path, '--state', 'open', '--limit', String(ISSUES_PER_REPO), '--json', 'number,title,url,createdAt,labels,body']
+      : ['glab', 'issue', 'list', '-R', `https://${repo.host}/${repo.path}`, '-O', 'json', '-P', String(ISSUES_PER_REPO)])
     try {
-      const repo = local.remote.trim().replace(/\/+$/, '').replace(/\.git$/, '').match(/github\.com[/:]([^/\s]+\/[^/\s]+)$/)?.[1]
-      if (!repo) continue
-      const listed = await context.io.runCommand(['gh', 'issue', 'list', '--repo', repo, '--label', 'handoff', '--state', 'open', '--limit', '50', '--json', 'number,title,url,createdAt,labels'])
-      if (listed.exitCode !== 0) { isComplete = false; continue }
-      const issues = JSON.parse(listed.stdout || '[]')
-      if (issues.length) byFolder[folder] = issues.map((i: any) => ({
-        number: i.number,
-        title: String(i.title ?? '').slice(0, 200),
-        url: i.url,
-        from: (i.labels ?? []).map((l: any) => String(l.name)).find((n: string) => n.startsWith('from-'))?.slice(5) ?? '',
-        createdAt: i.createdAt,
-      }))
-    } catch {
-      isComplete = false
+      if (listed.exitCode !== 0) throw new Error(firstLine(listed.stderr || listed.stdout) || `exit ${listed.exitCode}`)
+      const issues: any[] = JSON.parse(listed.stdout || '[]')
+      read.add(folder)
+      views[folder] = issueCommand(kind, repo.host, repo.path, 'view')
+      if (issues.length) byFolder[folder] = issues.map(i => {
+        const number = Number(kind === 'github' ? i.number : i.iid)
+        const labels: string[] = (i.labels ?? []).map((l: any) => String(typeof l === 'string' ? l : l?.name))
+        return {
+          number,
+          title: String(i.title ?? '').slice(0, 200),
+          url: String((kind === 'github' ? i.url : i.web_url) ?? ''),
+          from: labels.find(n => n.startsWith('from-'))?.slice(5) ?? '',
+          createdAt: String((kind === 'github' ? i.createdAt : i.created_at) ?? ''),
+          excerpt: excerptOf(kind === 'github' ? i.body : i.description),
+        }
+      })
+    } catch (error) {
+      problems[folder] = say(context, 'Its handoffs could not be read ({error}). They are read again in fifteen minutes.', { error: String((error as Error)?.message ?? error).slice(0, 200) })
+      unreadable.add(folder)
     }
   }
+  // The user is told in the coordination session too, not only on the page,
+  // since a tool or login to set up is theirs to do.
+  for (const [problem, folders] of newProblems) context.io.toast(say(context, 'Agent station · {rooms}: {problem}', { rooms: folders.join(', '), problem }))
   const current = await callOffice(context.io, context.officeUrl, { action: 'get', collection: 'config', doc_id: 'handoffs' })
   // A catalog that could not be read is left alone: writing it now would drop what it holds.
   if (!current.isOk) return
   const doc = parseDocs(current.text)[0]
-  const previous: typeof byFolder = doc?.data?.byFolder ?? {}
+  const previous: Record<string, Handoff[]> = doc?.data?.byFolder ?? {}
+  const previousViews: Record<string, string> = doc?.data?.views ?? {}
   const closed: Array<{ folder: string; number: number; title: string; closedAt: number }> = (doc?.data?.closedRecently ?? [])
     .filter((c: any) => Date.now() - Number(c.closedAt ?? 0) < CLOSED_HANDOFF_KEEP_MS)
-  if (isComplete && doc) {
-    for (const [folder, issues] of Object.entries(previous)) {
-      for (const issue of issues) {
+  if (doc) {
+    for (const folder of read) {
+      for (const issue of previous[folder] ?? []) {
         const isStillOpen = (byFolder[folder] ?? []).some(i => i.number === issue.number)
         if (!isStillOpen) closed.push({ folder, number: issue.number, title: issue.title, closedAt: Date.now() })
       }
     }
   }
-  await callOffice(context.io, context.officeUrl, {
+  for (const folder of unreadable) {
+    if (previous[folder]) byFolder[folder] = previous[folder]
+    if (previousViews[folder]) views[folder] = previousViews[folder]
+  }
+  const saved = await callOffice(context.io, context.officeUrl, {
     action: 'set',
     collection: 'config',
     doc_id: 'handoffs',
-    data: { byFolder: isComplete ? byFolder : { ...previous, ...byFolder }, closedRecently: closed.slice(-20), scannedAt: Date.now(), scannedBy: context.machine },
+    data: { byFolder, views, problems, closedRecently: closed.slice(-20), scannedAt: Date.now(), scannedBy: context.machine },
     if_version: doc?.version,
   })
+  // A catalog the station refused (too large, or not allowed) leaves the boards
+  // as they were: the user is told once, and the next scan tries again. One
+  // written meanwhile by another dispatcher is no problem: the next scan wins.
+  if (!saved.isOk && !saved.isVersionMismatch && !hasToldCatalogFailure) {
+    hasToldCatalogFailure = true
+    context.io.toast(say(context, 'Agent station: the list of open issues could not be saved ({error}). The boards keep the last list; it is tried again in fifteen minutes.', { error: saved.text.slice(0, 200) }))
+  }
+  if (saved.isOk) hasToldCatalogFailure = false
 }
+let hasToldCatalogFailure = false
 
 // A session deleted or archived from the app never reports its end, so its
 // office row would stay alive forever: compare with the app's own list.
