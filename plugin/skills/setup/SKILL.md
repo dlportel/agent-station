@@ -1,19 +1,40 @@
 ---
 name: setup
-description: Create a new agent station from a clone of agent-station - publish its page as a claude.ai artifact with its database, record its alias, add its URL to this plugin's stations option and open it. Use when the user asks to set up, create or install a station.
+description: Create a new agent station - find or clone agent-station as its coordination repo, publish its page as a claude.ai artifact with its database, record its alias, add its URL to this plugin's stations option and open it. Use when the user asks to set up, create or install a station, or after installing this plugin with no station.
 ---
 
 # Set up an agent station
 
-Create the user's station from the clone of agent-station this session runs in. Explain each
-step to the user in one line as you go, and ask before anything they have not asked for. The user
-approves each publish and each write as usual.
+Create the user's station. Explain each step to the user in one line as you go, and ask before
+anything they have not asked for. The user approves each publish and each write as usual.
 
-## 1. Check where you are
+## 1. Find the coordination repo
 
-- The working directory must be a clone of agent-station: it holds `page/office.html` and
-  `page/themes/space.js`. If it does not, tell the user to open this session in their clone (the
-  one they will use as the coordination repo, next to their other repos) and stop.
+A station needs a coordination repo: the repo whose Claude Code session delivers the orders. It has
+no room of its own, and it must sit in the same folder as the user's other repos, because the
+dispatcher finds the station's repos next to it. A clone of agent-station is the usual one: it does
+nothing but run the station, and it holds the station's page. (Any other repo of the station can be
+chosen as coordination later in CONFIGURE, at the cost of its room.)
+
+- If the working directory is a clone of agent-station (it holds `page/office.html` and
+  `page/themes/space.js`), use it.
+- Otherwise find the folder that holds the user's repos: the parent of the repo the working
+  directory is in (`git rev-parse --show-toplevel`). If the working directory is in no repo, ask the
+  user which folder holds their repos; never guess it.
+- Look there for `agent-station` holding those two files, and use it if it is there. If a folder of
+  that name exists without them, tell the user and ask what to do with it; do not clone over it.
+- Otherwise tell the user why the station needs one, and ask whether to clone agent-station into
+  `<that folder>/agent-station`. Clone it only if they agree; if they do not, stop. Clone the
+  release that matches this plugin, so the page and the plugin are the same version: the version
+  `claude plugin list` shows for it, as
+  `git clone --branch v<version> https://github.com/dlportel/agent-station.git <folder>`; if that
+  tag does not exist, clone without `--branch`.
+
+From here on, "the clone" is that folder. When it is not the working directory, the page cannot be
+published from where it is: copy `page/office.html` and `page/themes/space.js` from the clone into
+your scratchpad directory, keeping `themes/space.js` under a `themes` folder, and publish those
+copies.
+
 - Find this plugin's id with `claude plugin list`: the entry named `agent-station`, for example
   `agent-station@agent-station`. If there is more than one `agent-station`, tell the user
   that only one copy may be installed per computer and stop.
@@ -25,7 +46,8 @@ approves each publish and each write as usual.
 
 ## 3. Publish the page
 
-Publish `page/office.html` with the Artifact tool as a new artifact:
+Publish the clone's `page/office.html` (or its copy, see step 1) with the Artifact tool as a new
+artifact:
 
 - `title`: the station's name; `icon`: `robot`;
 - `files`: `{ "themes/space.js": "page/themes/space.js" }`, plus `{ "theme.js": "<path>" }` only if
@@ -90,6 +112,7 @@ Open the station with the Artifact tool (`action: "open"`) and tell the user, in
    among them. This clone is chosen as COORDINATION by itself. Choose a deck for each room and
    save. Describe what each room's agent does under SETTINGS: the agents read it.
 2. Run `/reload-plugins` in the sessions you have open (or restart the Claude app).
-3. Send this session a message: it is the coordination session, and that starts the dispatcher.
-   Keep it open; after restarting the Claude app, send it a message again.
+3. Open a Claude Code session in the clone and send it a message: it is the coordination session,
+   and that starts the dispatcher (if this session already runs in the clone, it is this one). Keep
+   it open; after restarting the Claude app, send it a message again.
 4. Open sessions in your other repos: each appears as a robot in its room.

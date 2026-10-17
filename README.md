@@ -113,7 +113,9 @@ repos, so it cannot be the coordination.
    ```
 
 2. **Set up the station.** Open a Claude Code session in your clone and run `/agent-station:setup`.
-   Claude asks for the station's name and language, publishes the station page as a claude.ai
+   If you installed the plugin from Claude Code's plugin directory (`/plugin`, Discover) and have
+   no clone yet, run it in any of your repos instead: it finds a clone of `agent-station` next to
+   them, or offers to make one, and uses it. Claude asks for the station's name and language, publishes the station page as a claude.ai
    artifact with its database, records its alias, adds its URL to the plugin's `stations` option
    and opens it. Then run `/reload-plugins` in the sessions you have open. To do these steps by
    hand, see [Manual setup](docs/reference.md#manual-setup).
@@ -125,8 +127,8 @@ repos, so it cannot be the coordination.
    language and save.
 
 4. **Start the coordination session.** The session in your clone, where you ran the setup, is the
-   coordination session: after `/reload-plugins`, send it any message. That starts the dispatcher, and the station's bridge shows "dispatcher
-   running on" your machine. Keep that session open. Claude Code starts a session's plugins only
+   coordination session: after `/reload-plugins`, send it any message. That starts the dispatcher,
+   and the station's bridge shows "dispatcher running on" your machine. Keep that session open. Claude Code starts a session's plugins only
    when the session itself starts, so after you restart Claude Code, or reopen that session, send
    it a message again; until then the bridge says that orders wait.
 

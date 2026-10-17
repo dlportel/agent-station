@@ -1143,3 +1143,32 @@ test('a station whose repos are on no issue host only tells to use orders', asyn
   expect(map).toContain('on hosts without handoffs: ask the rooms for work only with `mcp__agent-station__propose_order`')
   expect(map).not.toContain('issue create')
 })
+
+// Installed with no station at all, the plugin says once how to create one.
+test('a plugin with no station tells once to run the setup', { options: {} }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-none', 'C:/work/app', { COMPUTERNAME: 'TESTPC', USERPROFILE: 'C:/Users/me' })
+  const toasts: string[] = []
+  on('ui.toast' as any, (_$: any, e: any) => { toasts.push(String(e?.text ?? e)); return { value: null } })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+  await $.tool.call({ tool: 'Read', file_path: 'C:/y.md' } as any)
+  await clock.advance(5_000)
+
+  expect(toasts.filter(t => t.includes('/agent-station:setup')).length).toBe(1)
+})
+
+test('a plugin with a station says nothing about the setup', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-some', 'C:/work/app')
+  stubStation(on)
+  const toasts: string[] = []
+  on('ui.toast' as any, (_$: any, e: any) => { toasts.push(String(e?.text ?? e)); return { value: null } })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  expect(toasts.some(t => t.includes('/agent-station:setup'))).toBe(false)
+  await clock.advance(60_000)
+})

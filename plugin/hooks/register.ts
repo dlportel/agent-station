@@ -203,6 +203,7 @@ export const register: Register = (on, options) => {
       const member = await resolveMembership(engine)
       if (!member) {
         markMapSettled()
+        await tellWhenNoStation(engine)
         return
       }
       // The map is ready as soon as the station is known: the first message
@@ -222,6 +223,16 @@ export const register: Register = (on, options) => {
     } catch {
       markMapSettled()
     }
+  }
+
+  // A plugin installed without any station (from the plugin directory, say)
+  // says once per session how to create one, instead of doing nothing silently.
+  let hasToldNoStation = false
+  async function tellWhenNoStation(engine: EngineIo) {
+    if (hasToldNoStation) return
+    hasToldNoStation = true
+    const configured = urls.length ? urls : await readStationUrlsFromSettings(engine)
+    if (!configured.length) engine.toast('Agent Station is installed but has no station yet. Run /agent-station:setup to create one.')
   }
 
   // A reload mid-session fires session.start again, but the first tool call
