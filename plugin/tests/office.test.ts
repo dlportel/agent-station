@@ -180,6 +180,7 @@ test('a question to the user shows as waiting, then working again', { options },
 test('a permission prompt shows as waiting for permission', { options }, async ($, on) => {
   const clock = mock.clock(on)
   stubSession(on, 'test-session-permission', 'C:/work/app')
+  on('classic.PermissionRequest' as any, () => ({}))
   on('classic.Notification' as any, () => ({}))
   const written: any[] = []
   stubStation(on, e => {
@@ -192,7 +193,7 @@ test('a permission prompt shows as waiting for permission', { options }, async (
   await ($ as any).classic.Notification({ message: 'Claude is waiting for your input', notification_type: 'idle_prompt' })
   await clock.advance(30_000)
   expect(written.at(-1)?.state).not.toBe('waiting')
-  await ($ as any).classic.Notification({ message: 'Claude needs your permission to use Bash', notification_type: 'permission_prompt' })
+  await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: { command: 'ls' } } as any)
   await clock.advance(30_000)
 
   expect(written.at(-1).state).toBe('waiting')

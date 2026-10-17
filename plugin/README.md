@@ -30,9 +30,11 @@ check it before installing.
   your approval.
 - **A prompt** (`prompt.submit`): it adds the station's map as context for the model, and nothing
   else; the prompt itself passes unchanged.
+- **A permission prompt** (`classic.PermissionRequest`): it marks the session as waiting for
+  your permission on the station and passes the request on unchanged. It never decides it.
 - **Notices and the session's lifecycle** (`classic.Notification`, `turn.complete`, session
-  start and end): it reads them to show the session's state (working, waiting for your permission
-  or answer, idle) on the station. It never decides a permission.
+  start and end): it reads them to show the session's state (working, waiting for your answer,
+  idle) on the station.
 
 ### What it sends, and where
 
