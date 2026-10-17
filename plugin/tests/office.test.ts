@@ -70,7 +70,7 @@ test('reports the session to the station without blocking the tool', { options }
   expect(first.data.folder).toBe('app')
 })
 
-test('the detail of a tool call names the file, never its folder, and leaves secrets out of commands', { options }, async ($, on) => {
+test('the detail of a tool call names the file, never its folder, and leaves the arguments out of commands', { options }, async ($, on) => {
   const clock = mock.clock(on)
   stubSession(on, 'test-session-detail', 'C:/work/app')
   const written: any[] = []
@@ -84,16 +84,16 @@ test('the detail of a tool call names the file, never its folder, and leaves sec
   await clock.advance(30_000)
   await $.tool.call({ tool: 'Read', file_path: 'C:/work/app/docs/notes.md' } as any)
   await clock.advance(30_000)
-  await $.tool.call({ tool: 'Bash', command: 'git -C C:/work/app push https://user:token@host/repo.git' } as any)
+  await $.tool.call({ tool: 'Bash', command: 'git -C C:/work/app push https://example.test/private-path/repo.git' } as any)
   await clock.advance(30_000)
-  await $.tool.call({ tool: 'Bash', command: 'curl -H "Authorization: Bearer abc123" https://api.example.com' } as any)
+  await $.tool.call({ tool: 'Bash', command: 'rsync -a C:/work/app/build/ backup.example.test:/var/www/site' } as any)
   await clock.advance(30_000)
 
   const details = written.map(d => d.detail).filter(Boolean)
-  expect(details).toEqual(['notes.md', 'git push', 'curl Bearer'])
+  expect(details).toEqual(['notes.md', 'git push', 'rsync'])
   expect(JSON.stringify(written)).not.toContain('docs')
-  expect(JSON.stringify(written)).not.toContain('token')
-  expect(JSON.stringify(written)).not.toContain('abc123')
+  expect(JSON.stringify(written)).not.toContain('private-path')
+  expect(JSON.stringify(written)).not.toContain('var/www')
 })
 
 test('the department comes from the origin remote, by exact repo or by a /* pattern', { options }, async ($, on) => {
@@ -180,7 +180,7 @@ test('a question to the user shows as waiting, then working again', { options },
 test('a permission prompt shows as waiting for permission', { options }, async ($, on) => {
   const clock = mock.clock(on)
   stubSession(on, 'test-session-permission', 'C:/work/app')
-  on('classic.PermissionRequest' as any, () => ({}))
+  on('classic.Notification' as any, () => ({}))
   const written: any[] = []
   stubStation(on, e => {
     if (e.action === 'set') written.push(e.data)
@@ -189,7 +189,10 @@ test('a permission prompt shows as waiting for permission', { options }, async (
 
   await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
   await clock.advance(30_000)
-  await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: { command: 'ls' } } as any)
+  await ($ as any).classic.Notification({ message: 'Claude is waiting for your input', notification_type: 'idle_prompt' })
+  await clock.advance(30_000)
+  expect(written.at(-1)?.state).not.toBe('waiting')
+  await ($ as any).classic.Notification({ message: 'Claude needs your permission to use Bash', notification_type: 'permission_prompt' })
   await clock.advance(30_000)
 
   expect(written.at(-1).state).toBe('waiting')

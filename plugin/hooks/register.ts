@@ -346,8 +346,11 @@ export const register: Register = (on, options) => {
     }
   })
 
-  on('classic.PermissionRequest', ($, e, next) => {
-    updateReport({ state: 'waiting' satisfies SessionState, waitKind: 'permission' }, true)
+  // A permission prompt is read from its notice, not from the permission hook,
+  // so the mod never sits where the user's permission decision is made.
+  on('classic.Notification', ($, e, next) => {
+    if (e.notification_type === 'permission_prompt') updateReport({ state: 'waiting' satisfies SessionState, waitKind: 'permission' }, true)
+    else if (e.notification_type === 'elicitation_dialog') updateReport({ state: 'waiting' satisfies SessionState, waitKind: 'question' }, true)
     return next(e)
   })
 

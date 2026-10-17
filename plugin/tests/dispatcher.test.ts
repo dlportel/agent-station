@@ -730,7 +730,7 @@ test('glab without a login is told apart from a repo it cannot see', { options }
   const clock = mock.clock(on)
   stubEngine(on, [])
   stubGit(on, argv => argv.includes('auth')
-    ? { exitCode: 1, stdout: '', stderr: 'No token found for gitlab.other.test' }
+    ? { exitCode: 1, stdout: '', stderr: 'not logged in to gitlab.other.test' }
     : { exitCode: 1, stdout: '', stderr: '404 Not Found' },
   { 'C:/work/coord': 'https://github.com/acme/coord.git', 'C:/work/app': 'https://gitlab.other.test/team/app.git' })
   stubFolders(on)
@@ -743,7 +743,7 @@ test('glab without a login is told apart from a repo it cannot see', { options }
   const problem = String(db.read('config', 'handoffs')?.problems?.app)
   expect(problem).toContain('`glab` has no login for gitlab.other.test on TESTPC')
   expect(problem).toContain('glab auth login --hostname gitlab.other.test')
-  expect(problem).toContain('GITLAB_TOKEN')
+  expect(problem).toContain('reload the coordination session')
   await clock.advance(60_000)
 })
 
