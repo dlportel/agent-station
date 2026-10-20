@@ -67,11 +67,20 @@ function fakeOfficeDatabase(on: any, failWrite: (e: any) => boolean = () => fals
 }
 
 // git answers for the folders above; gh, when given, answers issue lists.
-// git answers from the given remotes; gh and glab, from issueTool.
-function stubGit(on: any, issueTool?: (argv: string[]) => any, remotes: Record<string, string> = REMOTES) {
+// A checkout's state, for the tests of the branch an order starts from.
+type CheckoutStub = { branch?: string; commit?: string; isDirty?: boolean; branchCommits?: Record<string, string> }
+// git answers from the given remotes (and checkout, if any); gh and glab, from issueTool.
+function stubGit(on: any, issueTool?: (argv: string[]) => any, remotes: Record<string, string> = REMOTES, checkout?: CheckoutStub) {
   on('process.run' as any, (_$: any, e: any) => {
     const argv: string[] = e.argv ?? e
     const path = String(argv[2] ?? '').replace(/\\/g, '/')
+    if (argv[0] === 'git' && checkout && argv[3] === 'branch') return { value: checkout.branch ? { exitCode: 0, stdout: checkout.branch + '\n' } : { exitCode: 0, stdout: '\n' } }
+    if (argv[0] === 'git' && checkout && argv[3] === 'status') return { value: { exitCode: 0, stdout: checkout.isDirty ? ' M src/app.ts\n' : '' } }
+    if (argv[0] === 'git' && checkout && argv[3] === 'rev-parse' && argv[4] === '--short') {
+      const ref = argv.at(-1) ?? ''
+      const commit = ref === 'HEAD' ? checkout.commit : checkout.branchCommits?.[ref.replace('refs/heads/', '').replace('refs/remotes/', '')]
+      return { value: commit ? { exitCode: 0, stdout: commit + '\n' } : { exitCode: 1, stdout: '' } }
+    }
     if (argv[0] === 'git' && argv[3] === 'rev-parse') return { value: remotes[path] ? { exitCode: 0, stdout: path + '\n' } : { exitCode: 128, stdout: '' } }
     if (argv[0] === 'git' && argv[3] === 'remote') return { value: remotes[path] ? { exitCode: 0, stdout: remotes[path] + '\n' } : { exitCode: 128, stdout: '' } }
     if ((argv[0] === 'gh' || argv[0] === 'glab') && issueTool) return { value: issueTool(argv) }
@@ -248,6 +257,127 @@ test('an idle session quiet for hours still takes an order, unless the app close
 
   expect(db.read('orders', 'o5')?.status).toBe('delivered')
   expect(db.read('orders', 'o5')?.deliveredTo).toBe('local_quiet')
+  await clock.advance(60_000)
+})
+
+test('a card starts by telling the new session which branch to start from', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls)
+  stubGit(on, undefined, REMOTES, { branch: 'feature/translation-hub', commit: 'a1b2c3d', isDirty: true })
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('orders', 'b1', { text: 'Fix the reports', folder: 'app', mode: 'new', status: 'pending', createdAt: Date.now() })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  const prompt = String(mcpCalls.find(c => c.tool === 'spawn_task')?.args?.prompt)
+  expect(prompt.startsWith('Before you touch anything, start from the branch `feature/translation-hub` (commit `a1b2c3d`).')).toBe(true)
+  expect(prompt).toContain('git switch -c <your-branch> feature/translation-hub')
+  expect(prompt).toContain('not from `origin/feature/translation-hub`')
+  expect(prompt).toContain('had changes that were not committed')
+  expect(prompt).toContain('Fix the reports')
+  const order = db.read('orders', 'b1')
+  expect(order?.base).toBe('feature/translation-hub')
+  expect(order?.baseCommit).toBe('a1b2c3d')
+  expect(order?.baseIsDefault).toBe(true)
+  await clock.advance(60_000)
+})
+
+test('an order that names its branch starts from it, with that branch\'s own commit', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls)
+  stubGit(on, undefined, REMOTES, { branch: 'master', commit: 'd654f15', isDirty: true, branchCommits: { 'release/2': 'e5f6a7b' } })
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('orders', 'b2', { text: 'Patch the release', folder: 'app', mode: 'new', status: 'pending', base: 'release/2', createdAt: Date.now() })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  const prompt = String(mcpCalls.find(c => c.tool === 'spawn_task')?.args?.prompt)
+  expect(prompt).toContain('start from the branch `release/2` (commit `e5f6a7b`)')
+  expect(prompt).not.toContain('had changes that were not committed')
+  expect(db.read('orders', 'b2')?.baseIsDefault).toBe(false)
+  await clock.advance(60_000)
+})
+
+test('a card whose branch git cannot tell is sent as before', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls)
+  stubGit(on)
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('orders', 'b3', { text: 'Handle issue 3', folder: 'app', mode: 'new', status: 'pending', createdAt: Date.now() })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  const prompt = String(mcpCalls.find(c => c.tool === 'spawn_task')?.args?.prompt)
+  expect(prompt).not.toContain('Before you touch anything')
+  expect(db.read('orders', 'b3')?.status).toBe('needs_click')
+  expect(db.read('orders', 'b3')?.base).toBeUndefined()
+  await clock.advance(60_000)
+})
+
+test('an open session on another branch is told so before the order', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls, [{ sessionId: 'local_app', isArchived: false }])
+  stubGit(on, undefined, REMOTES, { branch: 'feature/translation-hub', commit: 'a1b2c3d' })
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('sessions', 'local_app', { folder: 'app', machine: 'TESTPC', state: 'idle', lastEventAt: Date.now(), title: 'App', branch: 'master' })
+  db.seed('orders', 'b4', { text: 'Fix the reports', folder: 'app', mode: 'any', status: 'pending', createdAt: Date.now() })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  const message = String(mcpCalls.find(c => c.tool === 'send_message' && c.args?.session_id === 'local_app')?.args?.message)
+  expect(message.startsWith('This session is on the branch `master`, and this order was meant to start from `feature/translation-hub`.')).toBe(true)
+  expect(message).toContain('Fix the reports')
+  await clock.advance(60_000)
+})
+
+test('an open session in a worktree is told the order\'s branch and commit, not that it is on another branch', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls, [{ sessionId: 'local_app', isArchived: false }])
+  stubGit(on, undefined, REMOTES, { branch: 'feature/translation-hub', commit: 'a1b2c3d' })
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('sessions', 'local_app', { folder: 'app', machine: 'TESTPC', state: 'idle', lastEventAt: Date.now(), title: 'App', branch: 'claude/hungry-dubinsky-0c57bc', inWorktree: true })
+  db.seed('orders', 'b6', { text: 'Fix the reports', folder: 'app', mode: 'any', status: 'pending', createdAt: Date.now() })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  const message = String(mcpCalls.find(c => c.tool === 'send_message' && c.args?.session_id === 'local_app')?.args?.message)
+  expect(message).not.toContain('This session is on the branch')
+  expect(message.startsWith('This order starts from the branch `feature/translation-hub` (commit `a1b2c3d`). This session runs in a worktree, on a branch of its own')).toBe(true)
+  expect(message).toContain('git switch -c <your-branch> feature/translation-hub')
+  expect(message).toContain('Fix the reports')
+  await clock.advance(60_000)
+})
+
+test('an open session on the order\'s branch gets the order as before', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls, [{ sessionId: 'local_app', isArchived: false }])
+  stubGit(on, undefined, REMOTES, { branch: 'feature/translation-hub', commit: 'a1b2c3d' })
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('sessions', 'local_app', { folder: 'app', machine: 'TESTPC', state: 'idle', lastEventAt: Date.now(), title: 'App', branch: 'feature/translation-hub' })
+  db.seed('orders', 'b5', { text: 'Fix the reports', folder: 'app', mode: 'any', status: 'pending', createdAt: Date.now() })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  const message = String(mcpCalls.find(c => c.tool === 'send_message' && c.args?.session_id === 'local_app')?.args?.message)
+  expect(message).not.toContain('This session is on the branch')
   await clock.advance(60_000)
 })
 
@@ -850,5 +980,111 @@ test('with macOS or Linux paths the dispatcher opens a new session in the repo\'
 
   expect(mcpCalls.find(c => c.tool === 'spawn_task')?.args?.cwd).toBe('/work/app')
   expect(db.read('orders', 'x1')?.status).toBe('needs_click')
+  await clock.advance(60_000)
+})
+
+// The keeper of the dispatcher: a background command that never ends, started
+// and stopped by the session that dispatches, as config/departments keepAwake says.
+function stubKeeperTools(on: any, calls: any[]) {
+  let next = 0
+  on('tool.call', { tool: 'Bash' }, (_$: any, e: any) => {
+    calls.push(e)
+    return { result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: `bg${++next}` } } as any
+  })
+  on('tool.call', { tool: 'TaskStop' }, (_$: any, e: any) => {
+    calls.push(e)
+    return { result: { message: 'stopped', task_id: e.task_id, task_type: 'local_bash' } } as any
+  })
+}
+
+test('the dispatcher keeps its session awake while keepAwake is on, and stops when it is switched off', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  const toolCalls: any[] = []
+  stubEngine(on, mcpCalls)
+  stubGit(on)
+  stubKeeperTools(on, toolCalls)
+  const db = fakeOfficeDatabase(on)
+  db.seed('config', 'departments', { ...STATION, keepAwake: true })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+  const starts = () => toolCalls.filter(c => c.tool === 'Bash')
+  expect(starts().length).toBe(1)
+  expect(starts()[0].run_in_background).toBe(true)
+  expect(String(starts()[0].command)).toContain('agent-station-keep-awake')
+
+  // One keeper only, however many polls go by.
+  await clock.advance(5 * 60_000)
+  expect(starts().length).toBe(1)
+
+  db.seed('config', 'departments', { ...STATION, keepAwake: false })
+  await clock.advance(2 * 60_000)
+  expect(toolCalls.filter(c => c.tool === 'TaskStop').map(c => c.task_id)).toEqual(['bg1'])
+  await clock.advance(60_000)
+})
+
+test('without keepAwake the dispatcher starts no background command', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  const toolCalls: any[] = []
+  stubEngine(on, mcpCalls)
+  stubGit(on)
+  stubKeeperTools(on, toolCalls)
+  fakeOfficeDatabase(on)
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5 * 60_000)
+  expect(toolCalls.length).toBe(0)
+})
+
+test('a session of another room never starts a keeper, even with keepAwake on', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  const toolCalls: any[] = []
+  stubEngine(on, mcpCalls, [], [], undefined, 'C:/work/app')
+  stubGit(on)
+  stubKeeperTools(on, toolCalls)
+  const db = fakeOfficeDatabase(on)
+  db.seed('config', 'departments', { ...STATION, keepAwake: true })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5 * 60_000)
+  expect(toolCalls.length).toBe(0)
+})
+
+test("the agent's own keeper-like command is not approved by the plugin", { options }, async ($, on) => {
+  mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls)
+  stubGit(on)
+  fakeOfficeDatabase(on)
+  on('tool.check', { tool: 'Bash' }, () => ({ decision: 'ask', reason: 'beneath' }) as any)
+
+  const verdict: any = await $.tool.check({ tool: 'Bash', input: { command: 'while :; do sleep 3600; done # agent-station-keep-awake' } } as any)
+  expect(verdict.decision).toBe('ask')
+})
+
+test('an order whose branch exists only on origin says to use the remote one, and the order keeps it', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls, [{ sessionId: 'local_app', isArchived: false }])
+  stubGit(on, undefined, REMOTES, { branch: 'main', commit: 'd654f15', branchCommits: { 'origin/feature/x': 'c0ffee1' } })
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('sessions', 'local_app', { folder: 'app', machine: 'TESTPC', state: 'idle', lastEventAt: Date.now(), title: 'App', branch: 'claude/quiet-0c57bc', inWorktree: true })
+  db.seed('orders', 'b9', { text: 'Finish feature x', folder: 'app', mode: 'any', status: 'pending', base: 'feature/x', createdAt: Date.now() })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  const message = String(mcpCalls.find(c => c.tool === 'send_message' && c.args?.session_id === 'local_app')?.args?.message)
+  expect(message).toContain('starts from the branch `feature/x` (commit `c0ffee1`)')
+  expect(message).toContain('There is no local branch `feature/x` in this repo: use `origin/feature/x`')
+  const order = db.read('orders', 'b9')
+  expect(order?.status).toBe('delivered')
+  expect(order?.base).toBe('feature/x')
+  expect(order?.baseCommit).toBe('c0ffee1')
+  expect(order?.baseIsDefault).toBe(false)
   await clock.advance(60_000)
 })

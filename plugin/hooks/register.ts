@@ -1,7 +1,7 @@
 import type { Register } from 'claude-code'
 import { artifactKey, callOffice, isOfficeCall, mcpText, officeCallKey, parseDocs, toolDetail, type EngineIo, type OfficeDoc } from './office'
 import { startDispatcherInBackground } from './dispatcher'
-import { coordinationPeerNote, folderForRemote, joinPath, LANGS, readOriginRemote, readStationConfig, roomsLine, stationMap, stationRooms, stationUrls, isDirectSessionMessage, readOrderMark, type Lang, type Station } from './station'
+import { coordinationPeerNote, folderForRemote, isBranchName, joinPath, LANGS, readCurrentBranch, readOriginRemoteAnswer, readStationConfig, roomsLine, stationMap, stationRooms, stationUrls, isDirectSessionMessage, readOrderMark, type Lang, type Station } from './station'
 import { tx } from './locale-es'
 
 // Observer only: every hook hands the event on unchanged and never waits on
@@ -29,6 +29,9 @@ const LOG_MAX_LINES = 200
 const LOG_FOLDER = 'agent-station-logs'
 // A station that did not answer is asked again at once, then after 1, 5 and 15 minutes.
 const STATION_RETRY_MS = [0, 60_000, 5 * 60_000, 15 * 60_000]
+// A session that cannot join yet tries again this often by itself, and says so
+// once it has kept failing for this long.
+const JOIN_RETRY_MS = 60_000
 const QUESTION_TOOLS = new Set(['AskUserQuestion'])
 const SUBAGENT_TOOLS = new Set(['Agent', 'Task'])
 // An agent looking up its own session is not work worth showing on the station.
@@ -46,7 +49,7 @@ const coordinatorCommand = (language: Lang) => ({
 const COORDINATOR_COMMANDS = LANGS.map(coordinatorCommand)
 const PROPOSE_SPEC = {
   name: PROPOSE_TOOL_NAME,
-  description: 'Propose an order for the agent of another room of this station, for example to wake it after opening a handoff issue for it, or to return the result of an order this session received from another room. This is the only way to ask another room for work: never message its sessions directly. The order is not delivered until the user approves it in the station. Input: folder (the folder of the target room, as the station map lists it; to return a result, the folder of the room that asked), text (what the agent must do, or the result you return; include the issue link if there is one; at most 20000 characters, a longer order is refused whole, never cut), optional agent (a subagent of that room, only when the user asks for a particular one; otherwise that room chooses), optional mode (any | existing | new, default any), optional session_id (the station id of the session that must receive it), and reason (why you ask, at most 1000 characters). When this session received an order from that room, the new order goes back to the session that sent it, without session_id; if that session is gone, to another session of the room. The coordination session only hands orders out: never ask it to forward work or results.',
+  description: 'Propose an order for the agent of another room of this station, for example to wake it after opening a handoff issue for it, or to return the result of an order this session received from another room. This is the only way to ask another room for work: never message its sessions directly. The order is not delivered until the user approves it in the station. Input: folder (the folder of the target room, as the station map lists it; to return a result, the folder of the room that asked), text (what the agent must do, or the result you return; include the issue link if there is one; at most 20000 characters, a longer order is refused whole, never cut), optional agent (a subagent of that room, only when the user asks for a particular one; otherwise that room chooses), optional mode (any | existing | new, default any), optional session_id (the station id of the session that must receive it), optional base (the branch the work must start from; by default, the branch the checkout of the room is on when the order is delivered), and reason (why you ask, at most 1000 characters). When this session received an order from that room, the new order goes back to the session that sent it, without session_id; if that session is gone, to another session of the room. The coordination session only hands orders out: never ask it to forward work or results.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -55,6 +58,7 @@ const PROPOSE_SPEC = {
       agent: { type: 'string' },
       mode: { type: 'string', enum: ['any', 'existing', 'new'] },
       session_id: { type: 'string' },
+      base: { type: 'string' },
       reason: { type: 'string' },
     },
     required: ['folder', 'text', 'reason'],
@@ -70,6 +74,15 @@ const ORDER_REASON_MAX = 1_000
 const MAP_WAIT_MS = 8_000
 // How long a notice for the user stays on screen.
 const TOAST_MS = 30_000
+// The app stops the process of a session that has been idle for a while, and
+// the dispatcher with it, but not one with background work. When the station's
+// config sets keepAwake, the session that dispatches keeps a command running in
+// the background that never ends, and stops it when keepAwake is switched off.
+// The mark tells it apart from the agent's own commands.
+const KEEPER_MARK = 'agent-station-keep-awake'
+const KEEPER_COMMAND = `while :; do sleep 3600; done # ${KEEPER_MARK}`
+// A keeper that could not start is tried again after this long.
+const KEEPER_RETRY_MS = 10 * 60_000
 
 type Membership = { station: Station; folder: string }
 // Each configured station's config, in the order of the option (undefined: it did not answer).
@@ -88,7 +101,19 @@ export const register: Register = (on, options) => {
   let stationsRead: StationsRead | undefined
   let stationsRetryAt = 0
   let stationsFailures = 0
-  let remoteRead: Promise<string | undefined> | undefined
+  // The repo's remote, kept once git gave a clear answer; a failed read is
+  // read again only by the session's own retry, once a minute.
+  let remoteRead: Promise<{ remote?: string; isFinal: boolean }> | undefined
+  // Why the session could not tell yet whether it belongs to a station ('' once
+  // it could), how many of its own retries have run, and whether the user was told.
+  let joinProblem: '' | 'remote' | 'station' | 'unknown' = ''
+  let joinProblemStation = ''
+  // A session whose repo is in no station that answered may belong to none:
+  // it keeps trying, but says nothing.
+  let isJoinProblemQuiet = false
+  let joinRetries = 0
+  let hasToldJoinProblem = false
+  let isJoinRetryScheduled = false
   let membership: Promise<Membership | null> | undefined
   let isReporting = false
   let docId = ''
@@ -102,6 +127,16 @@ export const register: Register = (on, options) => {
   let isSessionOver = false
   let isCoordination = false
   const activeDrones = new Map<string, string>()
+  // The keeper's background task: wanted (the station's keepAwake, told by the
+  // dispatcher), the ids of those running, and the ones this mod is starting or
+  // stopping right now, which only it may approve.
+  let isKeeperWanted = false
+  let keeperTaskIds: string[] = []
+  let isKeeperSyncing = false
+  let isKeeperResyncNeeded = false
+  let keeperFailedAt = 0
+  let keeperStartsInFlight = 0
+  const keeperStopsInFlight = new Set<string>()
   let areSessionToolsRegistered = false
   let proposeToolName = ''
   // The map of the station this session belongs to. It goes with the session's
@@ -118,6 +153,9 @@ export const register: Register = (on, options) => {
   const ownCallsInFlight = new Map<string, number>()
   const isOwnCall = (input: any) => (ownCallsInFlight.get(officeCallKey(input)) ?? 0) > 0
   async function callToolAsMod(callTool: (call: any) => Promise<unknown>, call: Record<string, unknown>) {
+    // Only station calls are tracked: the key of any other call (the keeper's
+    // Bash, say) would match an agent's station call with the same empty fields.
+    if (call.tool !== 'ArtifactData') return callTool(call)
     const key = officeCallKey(call)
     ownCallsInFlight.set(key, (ownCallsInFlight.get(key) ?? 0) + 1)
     try {
@@ -167,13 +205,25 @@ export const register: Register = (on, options) => {
     membership ??= (async () => {
       let isWorthRetrying = false
       try {
-        remoteRead ??= io.cwd().then(cwd => readOriginRemote(io, cwd))
-        const remote = await remoteRead
-        if (!remote) return null
+        remoteRead ??= io.cwd().then(cwd => readOriginRemoteAnswer(io, cwd)).catch(() => ({ isFinal: false }))
+        const answer = await remoteRead
+        if (!answer.remote) {
+          if (answer.isFinal) {
+            joinProblem = ''
+            return null
+          }
+          isWorthRetrying = true
+          joinProblem = 'remote'
+          return null
+        }
+        const remote = answer.remote
         const { read } = await loadStations(io)
-        for (const candidate of read) {
+        for (const [index, candidate] of read.entries()) {
           if (!candidate) {
             isWorthRetrying = true
+            joinProblem = 'station'
+            joinProblemStation = urls[index] ?? ''
+            isJoinProblemQuiet = !read.slice(index + 1).some(later => !!later && !!folderForRemote(remote, later.repos))
             return null
           }
           const folder = folderForRemote(remote, candidate.repos)
@@ -181,11 +231,14 @@ export const register: Register = (on, options) => {
           station = candidate
           officeUrl = candidate.officeUrl
           ownKeys = candidate.officeKeys
+          joinProblem = ''
           return { station: candidate, folder }
         }
+        joinProblem = ''
         return null
       } catch {
         isWorthRetrying = true
+        joinProblem = 'unknown'
         return null
       } finally {
         if (isWorthRetrying) void Promise.resolve().then(() => { membership = undefined })
@@ -203,6 +256,11 @@ export const register: Register = (on, options) => {
       const member = await resolveMembership(engine)
       if (!member) {
         markMapSettled()
+        if (joinProblem) {
+          tellJoinProblem(engine)
+          scheduleJoinRetry(engine, calls)
+          return
+        }
         await tellWhenNoStation(engine)
         return
       }
@@ -223,6 +281,33 @@ export const register: Register = (on, options) => {
     } catch {
       markMapSettled()
     }
+  }
+
+  // A session that could not tell yet whether it belongs to a station (git
+  // failed, or a station earlier in the list does not answer) tries again by
+  // itself, so it joins without waiting for the agent's next step.
+  function scheduleJoinRetry(engine: EngineIo, calls: SessionCalls) {
+    if (isJoinRetryScheduled || isSessionOver) return
+    isJoinRetryScheduled = true
+    void engine.sleep(JOIN_RETRY_MS).then(() => {
+      isJoinRetryScheduled = false
+      if (areSessionToolsRegistered || isSessionOver) return
+      joinRetries++
+      if (joinProblem === 'remote') remoteRead = undefined
+      startOnce(engine, calls, 'idle')
+    }, () => { isJoinRetryScheduled = false })
+  }
+
+  // Said once, when the session's own retry a minute later fails too, so a slow
+  // start says nothing.
+  function tellJoinProblem(engine: EngineIo) {
+    if (hasToldJoinProblem || joinRetries < 1 || (joinProblem === 'station' && isJoinProblemQuiet)) return
+    hasToldJoinProblem = true
+    const language = stationsRead?.read.find(s => !!s)?.language
+    const reason = joinProblem === 'remote' ? tx(language, 'git could not read the remote of its repo')
+      : joinProblem === 'station' ? tx(language, 'the station {url} does not answer', { url: joinProblemStation })
+      : tx(language, 'it could not be checked')
+    engine.toast(tx(language, 'Agent station: this session could not join its station yet ({reason}). It keeps trying; if it does not join, run /reload-plugins.', { reason }))
   }
 
   // A plugin installed without any station (from the plugin directory, say)
@@ -325,7 +410,7 @@ export const register: Register = (on, options) => {
       if (isAgentWrite(e) && !isCoordinationWrite(e)) return { deny: 'The station only accepts writes from the station page itself. To ask for another agent to be woken, use the propose_order tool; the user approves it in the station.' }
       return next(e)
     }
-    if (e.tool === DESKTOP_SESSION_TOOL) return next(e)
+    if (e.tool === DESKTOP_SESSION_TOOL || isOwnKeeperCall(e.tool, e)) return next(e)
     if (isProposeTool(e.tool)) return { result: await proposeOrder(e) } as any
     const isQuestion = QUESTION_TOOLS.has(e.tool)
     const droneKey = SUBAGENT_TOOLS.has(e.tool) ? String((e as any).tool_use_id ?? Math.random()) : ''
@@ -365,6 +450,20 @@ export const register: Register = (on, options) => {
     return result
   })
 
+  // At the end of each turn the engine lists the session's background work: the
+  // keepers found there are the ones running, whoever started them (a reload of
+  // the mod forgets the ids it had).
+  on('classic.Stop', ($, e, next) => {
+    // An app that does not list them leaves the ids the mod already knows.
+    const tasks = (e as any).background_tasks
+    // A list taken while the mod starts a keeper may not show it yet.
+    if (isCoordination && Array.isArray(tasks) && keeperStartsInFlight === 0) {
+      keeperTaskIds = tasks.filter(task => String(task?.command ?? '').includes(KEEPER_MARK)).map(task => String(task.id))
+      void syncKeeper()
+    }
+    return next(e)
+  })
+
   on('classic.SessionEnd', ($, e, next) => {
     isSessionOver = true
     updateReport({ state: 'ended' satisfies SessionState, tool: null, detail: null, waitKind: null, endedAt: Date.now() }, true)
@@ -381,6 +480,12 @@ export const register: Register = (on, options) => {
     return isOwnOfficeCall ? { decision: 'allow', reason: 'The agent-station plugin reporting to its station' } : next(e)
   })
 
+  for (const tool of ['Bash', 'TaskStop']) {
+    on('tool.check', { tool }, ($, e, next) => {
+      return isOwnKeeperCall(e.tool, e.input) ? { decision: 'allow', reason: 'The agent-station plugin keeping the station dispatcher awake' } : next(e)
+    })
+  }
+
   // The mod's own station calls must never open a permission dialog, also on
   // an app that does not raise tool.check; the agent's calls go through the
   // normal permission flow. A write the guard
@@ -394,6 +499,7 @@ export const register: Register = (on, options) => {
       return { ask: tx(station.language, 'This agent wants to write to another Claude Code session directly, outside the station. Work between rooms goes through propose_order, which waits for your approval in the station: allow this only if you asked for it.') }
     }
     if (isOwnCall(input) && isOfficeCall(allKeys, e.tool_name, input)) return { allow: true }
+    if (isOwnKeeperCall(e.tool_name, input)) return { allow: true }
     if (isArtifactPageChange(e.tool_name, input) && isStationUrl(input) && isOwnStationPageChange(input)) {
       const isDelete = String(input?.action ?? 'publish') === 'delete'
       const ask = isDelete
@@ -411,6 +517,77 @@ export const register: Register = (on, options) => {
     }
     return next(e)
   })
+
+  // Only the keeper this mod is starting, or one it is stopping: the same
+  // command from the agent goes through the normal permission flow.
+  function isOwnKeeperCall(tool: string, input: any) {
+    if (tool === 'Bash') return keeperStartsInFlight > 0 && input?.command === KEEPER_COMMAND
+    if (tool === 'TaskStop') return keeperStopsInFlight.has(String(input?.task_id ?? ''))
+    return false
+  }
+
+  function setKeepAwake(isWanted: boolean) {
+    isKeeperWanted = isWanted
+    void syncKeeper()
+  }
+
+  // One keeper while it is wanted, none otherwise. Never throws: a keeper that
+  // cannot start is tried again later, and the station works as it did without.
+  async function syncKeeper() {
+    if (!io || !isCoordination || isSessionOver) return
+    if (isKeeperSyncing) {
+      isKeeperResyncNeeded = true
+      return
+    }
+    isKeeperSyncing = true
+    try {
+      do {
+        isKeeperResyncNeeded = false
+        const extra = isKeeperWanted ? keeperTaskIds.slice(1) : keeperTaskIds
+        for (const id of extra) await stopKeeper(id)
+        if (isKeeperWanted && !keeperTaskIds.length && Date.now() - keeperFailedAt >= KEEPER_RETRY_MS) await startKeeper()
+      } while (isKeeperResyncNeeded && !isSessionOver)
+    } catch {} finally {
+      isKeeperSyncing = false
+    }
+  }
+
+  async function startKeeper() {
+    if (!io) return
+    keeperStartsInFlight++
+    try {
+      const reply: any = await io.callTool({
+        tool: 'Bash',
+        command: KEEPER_COMMAND,
+        run_in_background: true,
+        description: tx(station?.language, 'Keep the station dispatcher awake'),
+      })
+      const id = reply?.result?.backgroundTaskId
+      if (id) {
+        keeperTaskIds = [String(id)]
+        keeperFailedAt = 0
+      } else {
+        keeperFailedAt = Date.now()
+        logStationEvent('keep-awake', `the keeper did not start: ${shortError(String(reply?.deny ?? JSON.stringify(reply ?? null)), LOG_ERROR_MAX)}`)
+      }
+    } catch (error) {
+      keeperFailedAt = Date.now()
+      logStationEvent('keep-awake', `the keeper did not start: ${String((error as Error)?.message ?? error)}`)
+    } finally {
+      keeperStartsInFlight--
+    }
+  }
+
+  async function stopKeeper(id: string) {
+    if (!io) return
+    keeperStopsInFlight.add(id)
+    try {
+      await io.callTool({ tool: 'TaskStop', task_id: id })
+    } catch {} finally {
+      keeperStopsInFlight.delete(id)
+      keeperTaskIds = keeperTaskIds.filter(other => other !== id)
+    }
+  }
 
   function isAgentWrite(input: any) {
     return !READ_ACTIONS.has(String(input?.action ?? ''))
@@ -531,6 +708,8 @@ export const register: Register = (on, options) => {
         drones: [],
         startedAt: Date.now(),
         endedAt: null,
+        branch: await readSessionBranch(io),
+        inWorktree: await isInWorktree(io),
       }, true)
       isCoordination = !!member.station.coordination && member.folder === member.station.coordination
       if (isCoordination && desktop?.sessionId) {
@@ -541,6 +720,7 @@ export const register: Register = (on, options) => {
           machine,
           ownSessionId: docId,
           isAlive: () => isReporting && !isSessionOver,
+          setKeepAwake,
         })
       }
       return true
@@ -563,6 +743,8 @@ export const register: Register = (on, options) => {
       const { rooms, groups } = stationRooms(station)
       if (!rooms.some(room => room.folder === folder) && !groups.length) return `Not proposed: this station has no room with the folder "${folder}". Its rooms, by folder, are: ${roomsLine(station)}.`
     }
+    const base = input.base === undefined || input.base === null || String(input.base).trim() === '' ? null : String(input.base).trim()
+    if (base !== null && !isBranchName(base)) return `Not proposed: "${base.slice(0, 80)}" is not a branch name. Give the branch as git shows it (letters, digits and . _ / -), or leave base out to start from the branch the room's checkout is on.`
     const mode = ORDER_MODES.has(String(input.mode)) ? String(input.mode) : 'any'
     const target = mode === 'new' ? undefined : await findReplyTarget(folder, input.session_id ? String(input.session_id).trim() : '')
     if (typeof target === 'string') return target
@@ -580,6 +762,7 @@ export const register: Register = (on, options) => {
         sessionId: target?.id ?? null,
         machine: target ? String(target.data.machine ?? '') || null : null,
         replyTo: target ? { sessionId: target.id, title: String(target.data.title ?? '') } : null,
+        base,
         status: 'proposed',
         reason,
         proposedBy: { sessionId: docId, title: report.title ?? '', folder: report.folder ?? '' },
@@ -628,6 +811,29 @@ export const register: Register = (on, options) => {
         if (Object.keys(patch).length > 0) updateReport(patch, false)
       })
       .catch(() => {})
+    // The session's branch, so an order meant for another one says so.
+    const engine = io
+    void readSessionBranch(engine).then(branch => { if (branch !== report.branch) updateReport({ branch }, false) }).catch(() => {})
+  }
+
+  // A session the app opened in a worktree of its repo, which it keeps under
+  // .claude/worktrees: such a session works on a branch of its own.
+  async function isInWorktree(engine: EngineIo): Promise<boolean> {
+    try {
+      return /[\\/]\.claude[\\/]worktrees[\\/]/.test(await engine.cwd())
+    } catch {
+      return false
+    }
+  }
+
+  // Never throws: a branch that cannot be read is null, and the session reports
+  // as it always did.
+  async function readSessionBranch(engine: EngineIo): Promise<string | null> {
+    try {
+      return (await readCurrentBranch(engine, await engine.cwd())) ?? null
+    } catch {
+      return null
+    }
   }
 
   function updateReport(patch: Record<string, unknown>, isUrgent: boolean) {

@@ -1,5 +1,5 @@
 import { test, expect, mock } from 'claude-code/testing'
-import { isDirectSessionMessage, stationFromConfig, stationMap } from '../hooks/station'
+import { isBranchName, isDirectSessionMessage, stationFromConfig, stationMap } from '../hooks/station'
 
 const OFFICE = 'https://claude.ai/artifact/test-station'
 const options = { stations: OFFICE }
@@ -1175,4 +1175,143 @@ test('a plugin with a station says nothing about the setup', { options }, async 
 
   expect(toasts.some(t => t.includes('/agent-station:setup'))).toBe(false)
   await clock.advance(60_000)
+})
+
+test('propose_order keeps a valid base branch and refuses one that is not a branch name', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-base')
+  on('tool.register' as any, () => ({ value: { tool: 'mcp__agent-station__propose_order' } }))
+  const writes: any[] = []
+  stubStation(on, e => {
+    writes.push(e)
+    return { result: { text: `The document is now at version ${writes.length}.` } }
+  })
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(30_000)
+
+  const refused: any = await $.tool.call({ tool: 'mcp__agent-station__propose_order', folder: 'app', text: 'Fix it', reason: 'Bug', base: 'main; rm -rf /' } as any)
+  await clock.advance(1_000)
+  expect(JSON.stringify(refused)).toContain('is not a branch name')
+  expect(writes.some(w => w.collection === 'orders' && w.action === 'set')).toBe(false)
+
+  const kept: any = await $.tool.call({ tool: 'mcp__agent-station__propose_order', folder: 'app', text: 'Fix it', reason: 'Bug', base: 'feature/translation-hub' } as any)
+  await clock.advance(1_000)
+  expect(JSON.stringify(kept)).toContain('Order proposed')
+  expect(writes.find(w => w.collection === 'orders' && w.action === 'set')?.data?.base).toBe('feature/translation-hub')
+})
+
+test('the map says that a new session of an order may work in a worktree', async () => {
+  const station = stationFromConfig({ repos: [{ remote: 'github.com/acme/app-repo', folder: 'app' }] }, OFFICE)
+  expect(stationMap(station, 'app', 'mcp__agent-station__propose_order')).toContain('may work in a git worktree of its repo')
+})
+
+// The app repo's worktrees, in both path forms, have the app repo's remote.
+REMOTES['C:\\work\\app\\.claude\\worktrees\\hungry-0c57bc'] = REMOTES['C:/work/app']
+REMOTES['/work/app/.claude/worktrees/hungry-0c57bc'] = REMOTES['C:/work/app']
+for (const [cwd, inWorktree] of [['C:\\work\\app\\.claude\\worktrees\\hungry-0c57bc', true], ['/work/app/.claude/worktrees/hungry-0c57bc', true], ['C:/work/app', false]] as const) {
+  test(`a session reports whether it runs in a worktree (${cwd})`, { options }, async ($, on) => {
+    const clock = mock.clock(on)
+    stubSession(on, 'test-session-wt', cwd)
+    const written: any[] = []
+    stubStation(on, e => {
+      if (e.collection === 'sessions' && e.action === 'set') written.push(e.data)
+      return { result: { text: `The document is now at version ${written.length}.` } }
+    })
+
+    await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+    await clock.advance(30_000)
+
+    expect(written.at(-1)?.inWorktree).toBe(inWorktree)
+    await clock.advance(60_000)
+  })
+}
+
+// git answers the remote after `failures` failed reads (an exit that is no
+// clear answer, as when it is killed), or never when failures is Infinity.
+function stubFlakyGit(on: any, failures: number) {
+  let reads = 0
+  on('process.run' as any, (_$: any, e: any) => {
+    const argv: string[] = e.argv ?? e
+    if (argv[0] === 'git' && argv[3] === 'remote') {
+      reads++
+      if (reads <= failures) return { value: { exitCode: 1, stdout: '', stderr: 'git was killed' } }
+      return { value: { exitCode: 0, stdout: REMOTES['C:/work/app'] + '\n' } }
+    }
+    return { value: { exitCode: 128, stdout: '' } }
+  })
+}
+
+test('a session whose remote git could not read at first joins its station by itself later', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  mock.env(on, { COMPUTERNAME: 'TESTPC' })
+  on('session.cwd' as any, () => ({ value: 'C:/work/app' }))
+  on('session.id' as any, () => ({ value: 'test-session-flaky' }))
+  on('tool.call', { tool: 'Read' }, () => ({ result: { text: 'ok' } }) as any)
+  stubFlakyGit(on, 1)
+  const officeCalls: any[] = []
+  stubStation(on, e => {
+    officeCalls.push(e)
+    return { result: { text: `The document is now at version ${officeCalls.length}.` } }
+  })
+  const toasts: string[] = []
+  on('ui.toast' as any, (_$: any, e: any) => { toasts.push(String(e?.text ?? e)); return { value: null } })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+  expect(officeCalls.some(c => c.collection === 'sessions')).toBe(false)
+
+  // No further step from the agent: the session tries again on its own.
+  await clock.advance(2 * 60_000)
+  expect(officeCalls.some(c => c.collection === 'sessions' && c.data?.folder === 'app')).toBe(true)
+  expect(toasts.filter(t => t.includes('could not join')).length).toBe(0)
+})
+
+test('a session that keeps failing to read its remote says so once', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  mock.env(on, { COMPUTERNAME: 'TESTPC' })
+  on('session.cwd' as any, () => ({ value: 'C:/work/app' }))
+  on('session.id' as any, () => ({ value: 'test-session-broken' }))
+  on('tool.call', { tool: 'Read' }, () => ({ result: { text: 'ok' } }) as any)
+  stubFlakyGit(on, Infinity)
+  stubStation(on)
+  const toasts: string[] = []
+  on('ui.toast' as any, (_$: any, e: any) => { toasts.push(String(e?.text ?? e)); return { value: null } })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(30_000)
+  expect(toasts.length).toBe(0)
+  await clock.advance(10 * 60_000)
+  const told = toasts.filter(t => t.includes('could not join its station yet'))
+  expect(told.length).toBe(1)
+  expect(told[0]).toContain('git could not read the remote')
+  expect(told[0]).toContain('/reload-plugins')
+})
+
+test('a folder git says has no origin is left alone, with no notice', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  mock.env(on, { COMPUTERNAME: 'TESTPC' })
+  on('session.cwd' as any, () => ({ value: 'C:/work/loose' }))
+  on('session.id' as any, () => ({ value: 'test-session-loose' }))
+  on('tool.call', { tool: 'Read' }, () => ({ result: { text: 'ok' } }) as any)
+  let reads = 0
+  on('process.run' as any, (_$: any, e: any) => {
+    const argv: string[] = e.argv ?? e
+    if (argv[0] === 'git' && argv[3] === 'remote') reads++
+    return { value: { exitCode: 2, stdout: '', stderr: "error: No such remote 'origin'" } }
+  })
+  stubStation(on)
+  const toasts: string[] = []
+  on('ui.toast' as any, (_$: any, e: any) => { toasts.push(String(e?.text ?? e)); return { value: null } })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10 * 60_000)
+  await $.tool.call({ tool: 'Read', file_path: 'C:/y.md' } as any)
+  await clock.advance(5_000)
+  expect(reads).toBe(1)
+  expect(toasts.length).toBe(0)
+})
+
+test('a branch name is accepted only as git would take it', () => {
+  for (const name of ['main', 'feature/translation-hub', 'release/2.4', 'fix_1-a']) expect(isBranchName(name)).toBe(true)
+  for (const name of ['.hidden', 'feat//x', 'feat/.x', 'x.', 'x.lock', 'a..b', '-x', 'x/', '/x', 'main; rm -rf /', '']) expect(isBranchName(name)).toBe(false)
 })

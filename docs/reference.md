@@ -16,6 +16,15 @@ room chooses its robots' silhouette, chassis colour and antenna in CONFIGURE. A 
 six subagents keeps them in a drone cabinet, one lit slot each (empty while the drone is out), which
 opens the full list with a shortcut to give each one an order.
 
+Orders and handoffs each have a full list, opened from the bridge (SEE ALL under RECENT ORDERS, SEE
+THEM ALL in OPEN HANDOFFS, and the `+N` on a room's board). It shows every item the page holds,
+newest first, fifteen to a page with the range and the page number, a filter (an order's state, a
+handoff's room) and a text search that ignores case and accents and needs every word typed: over an
+order's text, reason, note, room, agent, branch, state, the session it reached and the one that
+proposed it, and over a handoff's number, title, description, room and who asked. The list is
+built from the data the page already has, so it needs no extra reads. On the bridge, OPEN HANDOFFS
+shows the five newest of each room and a link to the rest.
+
 On a desktop screen (1100 px wide or more) the rooms sit on a grid so that the whole station fits
 the window without scrolling. The columns are equal, as many as the screen is wide for, each the
 narrowest a room is worth at the robots' scale. A room takes one cell, or as many side by side as
@@ -43,13 +52,14 @@ moment, not every tool call.
 | `language` | `en` (also when the field is missing) or `es`: the language of everything the station says, to people and to agents. The page, the map each session gets, the orders delivered, the dispatcher's notes on them, the coordination's notes and its command (`/coordinator`, or `/coordinador` in Spanish). The page and the plugin are written in English; the Spanish of each text lives in a dictionary, the page's `ES` and the plugin's `hooks/locale-es.ts`, and a text missing there is said in English. What the station's own config holds (room names, places, deck labels, descriptions) is shown as written. |
 | `theme` | The station's scenery. `space` (stars and planets, from `themes/space.js`) is the default, used when the field is missing or names a theme that is not loaded. A station adds its own themes in a `theme.js` published next to the page (see *Themes* in the README). A theme changes only the scenery, never the robots, the rooms or what the page does. |
 | `coordination` | The department whose sessions act as coordination: they run the dispatcher and may write orders and this document. |
+| `keepAwake` | `true` keeps the dispatcher's session awake with a background command (see *Keeping the dispatcher awake*). Off when missing. |
 | `departments` | Each room: `name`, `place`, `accent`, `wall`, `floor`, `furniture`, `accessory`, `weight` (width), fallback `agents`. |
 | `layout` | Rows of rooms: `{ "label": "ROW", "items": ["dept", "#canteen", "#hangar"] }`. Departments not placed in a row are shown after them. Every station also has two shared rooms: `#canteen`, where robots idle for a while go to rest (and to sleep in the small hours), and `#hangar`, where they go to recharge on its pads. A row can place them; one placed in no row is shown after the rows. |
 | `offStation` | The shared rooms taken off the station (`["#canteen"]`, `["#hangar"]` or both), chosen in CONFIGURE as "(not on the station)". A station without them simply has no such visits. |
 | `senders` | Which department each `from-*` handoff label stands for, to colour its notes. |
 | `aliases` | Other URLs the same artifact answers at (`https://claude.ai/code/artifact/<uuid>`). Not part of a template: each station writes its own. |
 
-The page's **CONFIGURE** button edits the title, the theme, the language, the coordination repo and the repos, one
+The page's **CONFIGURE** button edits the title, the theme, the language, the coordination repo, KEEP AWAKE and the repos, one
 row per repo (its remote and its room's deck). Its **DECKS** section edits the layout:
 it renames, adds and removes decks, and places the shared rooms on a deck or off the station; each
 repo row chooses its room's deck. A deck left with no rooms is not saved, and a room on no deck is
@@ -123,8 +133,24 @@ its repo, read with git when the session starts. While an earlier station in the
 answered, the session waits for it instead of landing on a later one. A station that does not
 answer is asked again at once, then after 1, 5 and 15 minutes; one that does not exist, or that
 this account cannot read, counts as answered with no repos. A session in no station's repos, or
-outside a git repo, is ignored for its whole life: the plugin never writes anywhere but that one
-station.
+in a folder git says is no repo or has no `origin`, is ignored for its whole life: the plugin
+never writes anywhere but that one station. When git fails instead (it cannot run, times out or
+ends with any other error), the remote is read again a minute later, and every minute after.
+
+A session that cannot tell yet whether it belongs to a station, because git failed or a station
+earlier in the list does not answer, tries again by itself every minute, without waiting for the
+agent's next step. If its retry a minute later fails too, it says so once in a notice: the
+reason, that it keeps trying, and that `/reload-plugins` starts it over. While the only problem is
+a station that does not answer, the notice comes only when the repo is in a later station that
+did answer, so a session in an unrelated repo says nothing.
+
+**Known case: an earlier station that does not answer holds back the later ones.** With two
+stations in `stations`, a session whose repo is only in the second one does not join it while the
+first does not answer, even if the second does. The plugin cannot tell that the first station
+does not list the repo too until it answers, and joining the second meanwhile could put the
+session in the wrong station. The session joins as soon as the first one answers; until then it
+has no map, and after a minute it shows the notice. Order `stations` with the station that
+answers most reliably first, or keep each machine's `stations` to the stations it works for.
 
 The guard keeps agents off every configured station, matching the artifact by its id across its
 URL and its `aliases`:
@@ -193,7 +219,8 @@ than 7 days ago; finished orders are deleted after 30 days, checked every five m
 
 An order that is waiting for your click, failed or was delivered can be resent from its detail on
 the page, as it is or with another destination. It goes back to the queue with its attempt number
-raised and the trace of its last delivery cleared, and the dispatcher handles it as a new order.
+raised and the trace of its last delivery cleared (a branch taken from the checkout is read again;
+one the order named stays), and the dispatcher handles it as a new order.
 Before resending a delivered order the page says which session got it, since it may already be
 done. From the second attempt on, the card's mark carries the attempt
 (`[agent-station order <id>#<attempt> for <folder>]`) and the dispatcher only takes the session
@@ -253,6 +280,73 @@ its host's command, handle it and close it with the commit or the pull or merge 
 resolves it; the user picks the agent, the session and the model, and the order keeps the issue it
 came from (`handoff`).
 `/coordinator <message>` sends a note to the station's coordination session on the same machine.
+
+### Keeping the dispatcher awake
+
+The dispatcher is a loop inside the process of the coordination session, and the app stops the
+process of a session that has been idle for a while. With it stops the dispatcher: approved orders
+wait until someone writes to the coordination session, which starts its process again. The app
+does not stop a session that has background work, so with `keepAwake` on (KEEP AWAKE in CONFIGURE)
+the session that holds the dispatcher lease keeps one:
+
+- **What runs.** A Bash command started by the plugin itself, in the background, that never ends:
+  `while :; do sleep 3600; done # agent-station-keep-awake`. It costs no tokens, and since it never
+  ends it never wakes the model. The plugin approves that exact command only while it is starting
+  it, and the stop only while it is stopping it; the same command from an agent gets the normal
+  permission flow.
+- **When.** The dispatcher reads `keepAwake` every minute, so switching it takes effect without
+  restarting the session: on, the plugin starts the command; off, it stops it with `TaskStop`. At
+  the end of each turn the app lists the session's background work, and the plugin keeps one
+  command and stops any other (a reload of the plugin forgets the one it had started).
+- **What it costs.** The app may count the session as busy while the command runs, and then its
+  setting to keep the computer awake while Claude works keeps the computer from going to sleep on
+  its own while the coordination session is open. A computer that sleeps anyway, or a closed app,
+  stops the dispatcher as before. A session that loses the dispatcher lease to another one stops
+  its command.
+- **When it cannot start** (the Bash tool is missing or the call is refused), the plugin logs it in
+  `~/.claude/agent-station-logs/<session>.log`, tries again ten minutes later, and the station works
+  as it does without it.
+
+Whether the setting is on or off, when no dispatcher holds a fresh lease (`LEASE_MS`, five
+minutes) for an approved order, the page says so: a **NO DISPATCHER** button in the header with
+the number of orders waiting, and a *Dispatcher* line in each waiting order's detail that names the
+machine when the order is for one. Writing any message to that machine's coordination session
+wakes it.
+
+### The branch an order starts from
+
+Every order starts from a branch of its room's repo, its **base**:
+
+- **Which branch.** The one the order names, if any: an agent can give it with
+  `propose_order`'s `base`, and you can set or change it while editing a proposal on the page.
+  Otherwise, the branch the room's checkout is on, on the dispatcher's machine, at the moment the
+  order is delivered. The person who asks rarely knows the branches of another room's repo, so
+  the default is where that repo actually is.
+- **What the order keeps.** The branch, the commit it points at, and whether it came from the
+  checkout (`base`, `baseCommit`, `baseIsDefault`), whether it went to a new session or an open one. The order's detail on the page shows them. A
+  resend reads a branch taken from the checkout again, and keeps one the order named.
+- **When git cannot tell** (a detached HEAD, a folder that is no repo), the order goes out as
+  before, with no word about branches.
+- **A branch only on origin.** When the order names a branch this machine has only as
+  `origin/<base>`, the session is told so, and to use `origin/<base>` after `git fetch origin
+  <base>`, or to ask you if git does not find it either.
+
+Why the session has to be told: the app opens the session of a new-session card in a worktree of
+the repo (a folder under `.claude/worktrees`) on a branch of its own, made from the remote's
+default branch, not from the branch the checkout is on. That session's branch name is always its
+own (`claude/…`), so what matters is the commit it starts from, not the name.
+
+What each session reads first:
+
+| Session | The message starts with |
+|---|---|
+| New, from a card | The base and its commit. If the session's commit is not the one the local base points at (`git rev-parse --short <base>`), it creates its work branch from the local base, never from `origin/<base>`, which may be behind: `git switch -c <its-branch> <base>`. If it runs in the repo's own folder and is not on the base, it does not switch branches there: it asks you. When the checkout had changes not committed, which a worktree does not see, it says so. |
+| Open, in a worktree | The same: the base and its commit, and to start from the local base when its own commit is another. It is never told it is "on another branch", since a worktree's branch is always its own. |
+| Open, in the repo's own folder, on another branch | That it is on another branch than the order's, and to check with you before changing anything. |
+| Open, in the repo's own folder, on the base | Nothing: it is where the order starts. |
+
+Each session reports to the station the branch it is on (`branch`) and whether it runs in one of
+the app's worktrees (`inWorktree`), which is how the dispatcher tells these cases apart.
 
 ## What a change reaches
 

@@ -130,7 +130,13 @@ repos, so it cannot be the coordination.
    coordination session: after `/reload-plugins`, send it any message. That starts the dispatcher,
    and the station's bridge shows "dispatcher running on" your machine. Keep that session open. Claude Code starts a session's plugins only
    when the session itself starts, so after you restart Claude Code, or reopen that session, send
-   it a message again; until then the bridge says that orders wait.
+   it a message again; until then the bridge says that orders wait. The app also stops a session's
+   process after a while without activity, the coordination session's included, and with it the
+   dispatcher; the header then shows NO DISPATCHER as soon as an approved order waits. To avoid
+   it, turn on KEEP AWAKE in CONFIGURE: the coordination session keeps a command running in the
+   background, which costs no tokens, so the app leaves it running. While it runs, the app may count
+   the session as busy, and then its setting to keep the computer awake while Claude works keeps
+   the computer from going to sleep on its own.
 
 5. **Open sessions in your other repos.** Each one appears as a robot in its room once it starts,
    and gets the station's map with its first message.
@@ -154,11 +160,26 @@ it to forward anything.
 the room's board shows them. **ASSIGN TO AN AGENT**, on a handoff, opens the order form filled in
 to handle that issue. A repo whose issues you do not want on the station is set to NO under ISSUES
 in CONFIGURE. When a room's issues cannot be read (no `gh` or `glab`, or no login), its board says
-why and on which machine.
+why and on which machine. The bridge lists the five newest of each room; SEE THEM ALL, or the `+N`
+on a board, opens every open handoff with a text search, a filter by room and pages of fifteen.
+The dispatcher reads the 100 newest open issues of each repo; a room that reaches that shows `100+`.
+
+**All orders.** RECENT ORDERS on the bridge shows the last six; SEE ALL opens every order the
+station keeps (the last 30 days), newest first, with a text search over the order, its reason, its
+room and the session that got it, a filter by state and pages of fifteen. An order opened from the
+list has a way back to the same page.
 
 **Resending.** An order waiting for your click, not delivered, or delivered can be sent again from
 its detail, as it was or to another destination. A delivered one asks first, naming the session
 that got it, since the work may already be done.
+
+**Branches.** Every order starts from a branch of its room's repo: the one it names, or else the
+branch that repo is on when the order is delivered. A new session the app opens for an order works
+in a worktree on a branch of its own, so its message starts by giving it that branch and its
+commit, and by telling it to create its work branch from the local branch when it started
+anywhere else. An open session gets the same note, or, if it works in the repo's own folder on
+another branch, a warning to check with you. See
+[The branch an order starts from](docs/reference.md#the-branch-an-order-starts-from).
 
 **Limits.** An order's text takes up to 20,000 characters and its reason up to 1,000. A longer one
 is refused whole, with its length, never cut.
@@ -181,6 +202,7 @@ configuration panel:
 | `language` | `en` (the default) or `es`: the language of the page, of the map each session gets, of the orders delivered and of the dispatcher's notes. What you write in the configuration (room names, places, deck labels, descriptions) is shown as written. |
 | `theme` | The scenery: `space`, the default, or a theme of your own (see *Themes*). |
 | `coordination` | The repo whose sessions coordinate the station. |
+| `keepAwake` | `true` keeps the coordination session from being stopped while it is idle, so orders are delivered at any hour (KEEP AWAKE in the panel). Off by default. |
 | `repos` | The station's repos by origin remote: `{ "remote": "github.com/org/repo", "folder": "room" }`, or a remote ending in `/*` for every repo of a group. `"issues": false` leaves a repo's (or a group's) issues off the station. |
 | `departments` | Each room: `name`, `description` (what its agent does, which the other agents read), `place`, `accent`, `wall`, `floor`, `furniture`, `accessory`, `body`, `antenna`, `weight`. |
 | `layout` | The decks: `{ "label": "DECK", "items": ["room", "#canteen", "#hangar"] }`. `#canteen` and `#hangar` are shared rooms where idle robots rest and recharge; one on no deck shows after the decks. |

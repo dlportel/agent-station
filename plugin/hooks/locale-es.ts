@@ -108,10 +108,32 @@ const ES: Record<string, string> = {
   '`{tool}` has no login for {host} on {machine}. Log in with `{login}`{token} and reload the coordination session.':
     '`{tool}` no tiene login para {host} en {machine}. Haz login con `{login}`{token} y recarga la sesión de coordinación.',
   ' (or set GITLAB_TOKEN)': ' (o define GITLAB_TOKEN)',
+  // the branch an order's work starts from
+  "A new session that an order opens may work in a git worktree of its repo (a folder under `.claude/worktrees`), on a branch of its own: the order's message says from which branch to start.":
+    'Una sesión nueva que abre una orden puede trabajar en un worktree de git de su repo (una carpeta dentro de `.claude/worktrees`), en una rama propia: el mensaje de la orden dice desde qué rama empezar.',
+  "Before you touch anything, start from the branch `{base}`{commit}. Check where this session is with `git branch --show-current` and `git rev-parse --short HEAD`. If it runs in a worktree of the repo (a folder under `.claude/worktrees`), it is on a branch of its own: if its commit is not the one the local `{base}` points at (`git rev-parse --short {base}`), create your work branch from the local `{base}`, not from `origin/{base}`, which may be behind: `git switch -c <your-branch> {base}`. If it runs in the repo's own folder and is not on `{base}`, do not switch branches there: ask the user first.":
+    'Antes de tocar nada, parte de la rama `{base}`{commit}. Comprueba dónde está esta sesión con `git branch --show-current` y `git rev-parse --short HEAD`. Si trabaja en un worktree del repo (una carpeta dentro de `.claude/worktrees`), está en una rama propia: si su commit no es al que apunta la `{base}` local (`git rev-parse --short {base}`), crea tu rama de trabajo desde la `{base}` local, no desde `origin/{base}`, que puede ir por detrás: `git switch -c <tu-rama> {base}`. Si trabaja en la carpeta del propio repo y no está en `{base}`, no cambies de rama ahí: pregúntale antes al usuario.',
+  ' (commit `{commit}`)': ' (commit `{commit}`)',
+  "When the order was sent, the repo's own folder had changes that were not committed, and a worktree does not see them. If the work needs them, tell the user before you start.":
+    'Cuando se envió la orden, la carpeta del propio repo tenía cambios sin commitear, y un worktree no los ve. Si el trabajo los necesita, díselo al usuario antes de empezar.',
+  'This order starts from the branch `{base}`{commit}. This session runs in a worktree, on a branch of its own: if its commit is not the one the local `{base}` points at (`git rev-parse --short {base}`), create your work branch from the local `{base}` before you change anything: `git switch -c <your-branch> {base}`.':
+    'Esta orden parte de la rama `{base}`{commit}. Esta sesión trabaja en un worktree, en una rama propia: si su commit no es al que apunta la `{base}` local (`git rev-parse --short {base}`), crea tu rama de trabajo desde la `{base}` local antes de cambiar nada: `git switch -c <tu-rama> {base}`.',
+  'This session is on the branch `{branch}`, and this order was meant to start from `{base}`. Check with the user before you change anything.':
+    'Esta sesión está en la rama `{branch}`, y esta orden debía partir de `{base}`. Confírmalo con el usuario antes de cambiar nada.',
   'Agent station: the list of open issues could not be saved ({error}). The boards keep the last list; it is tried again in fifteen minutes.':
     'Estación de agentes: no se pudo guardar la lista de issues abiertas ({error}). Los tableros mantienen la última lista; se vuelve a intentar dentro de quince minutos.',
   'Agent station · {rooms}: {problem}': 'Estación de agentes · {rooms}: {problem}',
   'Its handoffs could not be read ({error}). They are read again in fifteen minutes.': 'No se pudieron leer sus encargos ({error}). Se vuelven a leer dentro de quince minutos.',
+  'There is no local branch `{base}` in this repo: use `origin/{base}` in its place, after `git fetch origin {base}`; if git does not find that either, ask the user.':
+    'En este repo no hay una rama local `{base}`: usa `origin/{base}` en su lugar, después de `git fetch origin {base}`; si git tampoco la encuentra, pregunta al usuario.',
+  // the keeper of the dispatcher
+  'Keep the station dispatcher awake': 'Mantener despierto el despachador de la estación',
+  // a session that cannot join its station yet
+  'Agent station: this session could not join its station yet ({reason}). It keeps trying; if it does not join, run /reload-plugins.':
+    'Estación de agentes: esta sesión aún no se ha podido unir a su estación ({reason}). Lo sigue intentando; si no lo consigue, ejecuta /reload-plugins.',
+  'git could not read the remote of its repo': 'git no pudo leer el remote de su repo',
+  'the station {url} does not answer': 'la estación {url} no contesta',
+  'it could not be checked': 'no se pudo comprobar',
 }
 
 // A text in the station's language, with its {placeholders} filled in.

@@ -131,6 +131,7 @@ export function stationMap(station: Station, ownFolder: string, proposeTool: str
     '',
     say("Never write to another room's sessions directly (with SendMessage or a session tool): work between rooms goes only through `{tool}`, so that the user approves it.", { tool: proposeTool }),
   )
+  lines.push('', say("A new session that an order opens may work in a git worktree of its repo (a folder under `.claude/worktrees`), on a branch of its own: the order's message says from which branch to start."))
   lines.push(...handoffLines(station, proposeTool))
   if (station.coordination) lines.push('', say('The coordination session (`{coordination}`) runs the station and delivers the approved orders, but it is no go-between for the rooms: never write to it to ask for work, return a result or forward anything; that is what `{tool}` is for.', { coordination: station.coordination, tool: proposeTool }))
   return lines.join('\n')
@@ -267,12 +268,85 @@ export function issueCommand(kind: IssueKind, host: string, path: string, verb: 
   return { create: `glab issue create -R ${repo} --title "…" --description "…"`, view: `glab issue view <n> -R ${repo}`, list: `glab issue list -R ${repo}` }[verb]
 }
 
+// A branch an order may start from: parts of letters, digits and . _ - joined
+// by single slashes, no part starting with . or -, no "..", and no ending in .
+// or .lock: names git accepts, which can stand in a git command as they are.
+export function isBranchName(name: unknown): name is string {
+  return typeof name === 'string' && name.length <= 200
+    && /^[A-Za-z0-9_][A-Za-z0-9._-]*(\/[A-Za-z0-9_][A-Za-z0-9._-]*)*$/.test(name)
+    && !name.includes('..') && !name.endsWith('.') && !name.endsWith('.lock')
+}
+
+// The branch the checkout at path is on; undefined on a detached HEAD or
+// outside a repo. One git command, cheap enough for every turn.
+export async function readCurrentBranch(io: EngineIo, path: string): Promise<string | undefined> {
+  try {
+    const reply = await io.runCommand(['git', '-C', path, 'branch', '--show-current'])
+    const branch = reply.exitCode === 0 ? reply.stdout.trim() : ''
+    return isBranchName(branch) ? branch : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// The branch a checkout is on, its commit and whether it has changes not
+// committed; a field git cannot tell (a detached HEAD, a folder that is no
+// repo) is left out.
+export type Checkout = { branch?: string; commit?: string; isDirty?: boolean }
+export async function readCheckout(io: EngineIo, path: string): Promise<Checkout> {
+  const run = async (argv: string[]) => {
+    try {
+      const reply = await io.runCommand(['git', '-C', path, ...argv])
+      return reply.exitCode === 0 ? reply.stdout.trim() : undefined
+    } catch {
+      return undefined
+    }
+  }
+  // One after the other: commands run one at a time everywhere in the plugin.
+  const branch = await run(['branch', '--show-current'])
+  const commit = await run(['rev-parse', '--short', 'HEAD'])
+  const status = await run(['status', '--porcelain'])
+  return {
+    branch: isBranchName(branch) ? branch : undefined,
+    commit: commit && /^[0-9a-f]{4,40}$/.test(commit) ? commit : undefined,
+    isDirty: status === undefined ? undefined : status.length > 0,
+  }
+}
+
+// The commit a branch points at, when it exists: the local one, or with
+// isRemote the one fetched from origin.
+export async function readBranchCommit(io: EngineIo, path: string, branch: string, isRemote = false): Promise<string | undefined> {
+  try {
+    const ref = isRemote ? `refs/remotes/origin/${branch}` : `refs/heads/${branch}`
+    const reply = await io.runCommand(['git', '-C', path, 'rev-parse', '--short', '--verify', '--quiet', ref])
+    const commit = reply.exitCode === 0 ? reply.stdout.trim() : ''
+    return /^[0-9a-f]{4,40}$/.test(commit) ? commit : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export async function readOriginRemote(io: EngineIo, path: string): Promise<string | undefined> {
   try {
     const reply = await io.runCommand(['git', '-C', path, 'remote', 'get-url', 'origin'])
     return reply.exitCode === 0 ? reply.stdout.trim() || undefined : undefined
   } catch {
     return undefined
+  }
+}
+
+// The origin remote of the repo at path, telling a clear answer from a failure:
+// isFinal when git answered that the folder has no origin (exit 2) or is no
+// repo it can use (exit 128), so asking again would not change it; not final
+// when git could not run, timed out or ended any other way, which may pass.
+export async function readOriginRemoteAnswer(io: EngineIo, path: string): Promise<{ remote?: string; isFinal: boolean }> {
+  try {
+    const reply = await io.runCommand(['git', '-C', path, 'remote', 'get-url', 'origin'])
+    const remote = reply.exitCode === 0 ? reply.stdout.trim() : ''
+    if (remote) return { remote, isFinal: true }
+    return { isFinal: reply.exitCode === 2 || reply.exitCode === 128 }
+  } catch {
+    return { isFinal: false }
   }
 }
 

@@ -1,5 +1,5 @@
 import { callOffice, mcpText, parseDocs, type EngineIo, type OfficeDoc } from './office'
-import { issueCommand, issueRepoOf, joinPath, orderClaim, orderMark, parentOf, readMainRepoTop, readOriginRemote, ruleForRemote, type IssueKind, type Station } from './station'
+import { isBranchName, issueCommand, issueRepoOf, joinPath, orderClaim, orderMark, parentOf, readBranchCommit, readCheckout, readMainRepoTop, readOriginRemote, ruleForRemote, type IssueKind, type Station } from './station'
 import { tx } from './locale-es'
 
 // Delivers the orders written in the station to this machine's sessions. One
@@ -16,6 +16,9 @@ export type DispatcherContext = {
   machine: string
   ownSessionId: string
   isAlive: () => boolean
+  // Told, while this session dispatches, whether the station wants its process
+  // kept awake (config/departments keepAwake).
+  setKeepAwake?: (isWanted: boolean) => void
 }
 
 // showsIssues is false for a repo whose rule says issues: false.
@@ -80,14 +83,23 @@ export function startDispatcherInBackground(context: DispatcherContext) {
     while (context.isAlive()) {
       try {
         const isLeaseFresh = Date.now() - leaseRenewedAt < LEASE_RENEW_MS
-        if (!isLeaseFresh) leaseRenewedAt = (await holdDispatcherLease(context)) ? Date.now() : 0
+        if (!isLeaseFresh) {
+          const lease = await holdDispatcherLease(context)
+          leaseRenewedAt = lease === 'held' ? Date.now() : 0
+          // A session that no longer dispatches lets its keeper go; one whose
+          // lease could not be read keeps it, and tries again.
+          if (lease === 'taken') context.setKeepAwake?.(false)
+        }
         if (leaseRenewedAt > 0) {
           if (!hasScannedAgents) {
             hasScannedAgents = true
             await syncAgentCatalog(context)
           }
           if (polls % HANDOFFS_EVERY_POLLS === 0) await syncHandoffs(context)
-          if (polls % RECONCILE_EVERY_POLLS === 0) await reconcileSessions(context)
+          if (polls % RECONCILE_EVERY_POLLS === 0) {
+            await readKeepAwake(context)
+            await reconcileSessions(context)
+          }
           if (polls % OLD_ORDERS_EVERY_POLLS === 0) await removeOldOrders(context)
           const open = await queryOrders(context, ['pending', 'needs_click'])
           await deliverPendingOrders(context, open.filter(order => order.data.status === 'pending'))
@@ -101,17 +113,17 @@ export function startDispatcherInBackground(context: DispatcherContext) {
   })()
 }
 
-async function holdDispatcherLease(context: DispatcherContext): Promise<boolean> {
+async function holdDispatcherLease(context: DispatcherContext): Promise<'held' | 'taken' | 'unknown'> {
   const { io, officeUrl, machine, ownSessionId } = context
   const leaseId = sanitizeId(machine || 'unknown')
   const current = await callOffice(io, officeUrl, { action: 'get', collection: 'dispatchers', doc_id: leaseId })
   // A lease that could not be read is never taken: it may be held by a live session.
-  if (!current.isOk) return false
+  if (!current.isOk) return 'unknown'
   const lease = parseDocs(current.text)[0]
   const isHeldByOther = lease
     && lease.data.sessionId !== ownSessionId
     && Date.now() - Number(lease.data.heartbeatAt ?? 0) < LEASE_MS
-  if (isHeldByOther) return false
+  if (isHeldByOther) return 'taken'
   const written = await callOffice(io, officeUrl, {
     action: 'set',
     collection: 'dispatchers',
@@ -119,7 +131,17 @@ async function holdDispatcherLease(context: DispatcherContext): Promise<boolean>
     data: { sessionId: ownSessionId, machine, heartbeatAt: Date.now() },
     if_version: lease?.version,
   })
-  return written.isOk
+  return written.isOk ? 'held' : 'unknown'
+}
+
+// Read every minute, so switching it in the station's settings takes effect
+// without restarting the session. A config that cannot be read changes nothing.
+async function readKeepAwake(context: DispatcherContext) {
+  if (!context.setKeepAwake) return
+  const reply = await callOffice(context.io, context.officeUrl, { action: 'get', collection: 'config', doc_id: 'departments' })
+  if (!reply.isOk) return
+  const config = parseDocs(reply.text)[0]?.data
+  if (config) context.setKeepAwake(config.keepAwake === true)
 }
 
 // The agents each project defines in .claude/agents/*.md, read once when the
@@ -497,14 +519,15 @@ async function deliverToSession(context: DispatcherContext, order: OfficeDoc, se
       return true
     }
   }
-  const message = composeOrderMessage(context, order)
+  const branchCheck = await branchCheckNote(context, order, session)
+  const message = `${branchCheck.note}${composeOrderMessage(context, order)}`
   const reply = await callMcpSafely(context, 'ccd_session_mgmt', 'send_message', {
     session_id: session.id,
     message: message.includes('@') ? `${message}\n\n${atSignNote(context)}` : message,
   })
   if (!reply.isOk || !/delivered|queued/i.test(reply.text)) return reply.text.slice(0, 300) || 'no answer'
   const queued = /queued/i.test(reply.text) ? say(context, 'Queued: the session was finishing something else.') : ''
-  await updateOrder(context, order, { status: 'delivered', deliveredTo: session.id, deliveredTitle: session.data.title ?? '', deliveredAt: Date.now(), note: [note, queued].filter(Boolean).join(' ') })
+  await updateOrder(context, order, { status: 'delivered', deliveredTo: session.id, deliveredTitle: session.data.title ?? '', deliveredAt: Date.now(), note: [note, queued].filter(Boolean).join(' '), ...(branchCheck.start ? startFieldsOf(branchCheck.start) : {}) })
   return true
 }
 
@@ -521,18 +544,82 @@ async function prepareNewSession(context: DispatcherContext, order: OfficeDoc) {
     return
   }
   const text = String(order.data.text ?? '')
+  const start = await readStart(context, order, local.path)
   const reply = await callMcpSafely(context, 'ccd_session', 'spawn_task', {
     title: `${say(context, 'Station')}: ${text.slice(0, 50)}`,
     tldr: say(context, 'Order sent from the station for {room}. Click to open the session with this order as its first message.', { room: folder }),
     // The mark lets the session the card opens claim this order, and only it.
-    prompt: `${composeOrderMessage(context, order)}
+    prompt: `${startNote(context, start)}${composeOrderMessage(context, order)}
 
 ${orderMark(order.id, folder, order.data.attempt)}`,
     cwd: local.path,
   })
+  const startFields = startFieldsOf(start)
   await updateOrder(context, order, reply.isOk
-    ? { status: 'needs_click', spawnedAt: Date.now(), note: say(context, 'Card ready in the coordination session of {machine}: click it to create the session.', { machine: context.machine }) }
+    ? { status: 'needs_click', spawnedAt: Date.now(), note: say(context, 'Card ready in the coordination session of {machine}: click it to create the session.', { machine: context.machine }), ...startFields }
     : { status: 'failed', note: say(context, 'The new session could not be prepared: {error}', { error: reply.text.slice(0, 300) }) })
+}
+
+// The branch an order's work starts from: the one the order names, or else the
+// branch the room's checkout is on now. The app opens a card's session in a
+// worktree it makes from the remote's default branch, not from the checkout's,
+// so the session is told where to start. Nothing here is required: a branch
+// git cannot tell leaves the message as it was.
+// isRemoteOnly: the order names a branch this machine has only as origin's.
+type Start = { base?: string; commit?: string; isDefault: boolean; isDirty: boolean; isRemoteOnly?: boolean }
+async function readStart(context: DispatcherContext, order: OfficeDoc, path: string): Promise<Start> {
+  const chosen = isBranchName(order.data.base) && !order.data.baseIsDefault ? String(order.data.base) : ''
+  const checkout = await readCheckout(context.io, path)
+  if (!chosen) return { base: checkout.branch, commit: checkout.commit, isDefault: true, isDirty: !!checkout.isDirty }
+  const commit = chosen === checkout.branch ? checkout.commit : await readBranchCommit(context.io, path, chosen)
+  if (commit) return { base: chosen, commit, isDefault: false, isDirty: chosen === checkout.branch && !!checkout.isDirty }
+  return { base: chosen, commit: await readBranchCommit(context.io, path, chosen, true), isDefault: false, isDirty: false, isRemoteOnly: true }
+}
+
+// The fields an order keeps about the branch it started from, for the page;
+// one taken from the checkout is marked so, so a resend reads it again.
+function startFieldsOf(start: Start) {
+  return start.base ? { base: start.base, baseCommit: start.commit ?? null, baseIsDefault: start.isDefault } : {}
+}
+
+// What a session is told when the order's branch is not a local branch here.
+function remoteOnlyNote(context: DispatcherContext, start: Start): string {
+  return start.isRemoteOnly
+    ? `${say(context, 'There is no local branch `{base}` in this repo: use `origin/{base}` in its place, after `git fetch origin {base}`; if git does not find that either, ask the user.', { base: start.base })}\n\n`
+    : ''
+}
+
+// What a new session reads first: start from the order's branch, from the
+// local branch rather than the remote's, and never switch the repo's own
+// folder to another branch without the user.
+function startNote(context: DispatcherContext, start: Start): string {
+  if (!start.base) return ''
+  const lines = [say(context, "Before you touch anything, start from the branch `{base}`{commit}. Check where this session is with `git branch --show-current` and `git rev-parse --short HEAD`. If it runs in a worktree of the repo (a folder under `.claude/worktrees`), it is on a branch of its own: if its commit is not the one the local `{base}` points at (`git rev-parse --short {base}`), create your work branch from the local `{base}`, not from `origin/{base}`, which may be behind: `git switch -c <your-branch> {base}`. If it runs in the repo's own folder and is not on `{base}`, do not switch branches there: ask the user first.", {
+    base: start.base,
+    commit: start.commit ? say(context, ' (commit `{commit}`)', { commit: start.commit }) : '',
+  })]
+  if (start.isRemoteOnly) lines.push(remoteOnlyNote(context, start).trim())
+  if (start.isDirty) lines.push(say(context, "When the order was sent, the repo's own folder had changes that were not committed, and a worktree does not see them. If the work needs them, tell the user before you start."))
+  return `${lines.join('\n\n')}\n\n`
+}
+
+// What an open session reads first about the order's branch. A session in a
+// worktree is always on a branch of its own, so its branch's name says nothing:
+// it is told the order's branch and commit, and to start from them when its
+// own commit is another. A session in the repo's own folder on another branch
+// is told so, and to ask the user before changing anything.
+async function branchCheckNote(context: DispatcherContext, order: OfficeDoc, session: OfficeDoc): Promise<{ note: string; start?: Start }> {
+  const local = (await localRepos(context)).get(String(order.data.folder ?? ''))
+  if (!local) return { note: '' }
+  const start = await readStart(context, order, local.path)
+  if (!start.base) return { note: '', start }
+  const commit = start.commit ? say(context, ' (commit `{commit}`)', { commit: start.commit }) : ''
+  if (session.data.inWorktree === true) {
+    return { start, note: `${say(context, 'This order starts from the branch `{base}`{commit}. This session runs in a worktree, on a branch of its own: if its commit is not the one the local `{base}` points at (`git rev-parse --short {base}`), create your work branch from the local `{base}` before you change anything: `git switch -c <your-branch> {base}`.', { base: start.base, commit })}\n\n${remoteOnlyNote(context, start)}` }
+  }
+  const branch = isBranchName(session.data.branch) ? String(session.data.branch) : ''
+  if (!branch || branch === start.base) return { note: remoteOnlyNote(context, start), start }
+  return { start, note: `${say(context, 'This session is on the branch `{branch}`, and this order was meant to start from `{base}`. Check with the user before you change anything.', { branch, base: start.base })}\n\n${remoteOnlyNote(context, start)}` }
 }
 
 // A new-session order goes to the session its card opened: the one that found

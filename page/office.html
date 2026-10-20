@@ -270,7 +270,8 @@ body.no-motion .cleaner { display: none; }
 .notes { display: flex; gap: 3px; align-items: center; }
 .note { width: 22px; height: 18px; padding: 0; border: 0; border-top: 3px solid rgba(0,0,0,.28); cursor: pointer; font: 7px/1 var(--font-pixel); color: #1a1205; display: flex; align-items: center; justify-content: center; box-shadow: 1px 1px 0 rgba(0,0,0,.35); }
 .note:hover { filter: brightness(1.15); }
-.note-more { font: 8px/1 var(--font-pixel); color: #2a1c0a; }
+.note-more { font: 8px/1 var(--font-pixel); color: #2a1c0a; background: none; border: 0; padding: 0; cursor: pointer; }
+.note-more:hover, .note-more:focus-visible { text-decoration: underline; }
 .tubes { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 2; overflow: visible; }
 .tube-cap { position: absolute; left: 0; top: 0; z-index: 4; offset-rotate: 0deg; offset-anchor: center; cursor: pointer; background: none; border: 0; padding: 0; }
 .tube-cap.waiting { offset-distance: 50%; animation: pulse .9s steps(2) infinite; }
@@ -295,7 +296,7 @@ body.no-motion .tube-cap.moving { animation: none; offset-distance: 100%; }
 .facts dd { margin: 0; overflow-wrap: anywhere; }
 .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .field > span { font-family: var(--font-pixel); font-size: 10px; color: var(--muted); }
-select, textarea, input[type="text"] { background: var(--panel); color: var(--fg); border: 2px solid var(--line); font-family: inherit; font-size: 12px; padding: 7px 6px; min-width: 0; width: 100%; box-sizing: border-box; }
+select, textarea, input[type="text"], input[type="search"] { background: var(--panel); color: var(--fg); border: 2px solid var(--line); font-family: inherit; font-size: 12px; padding: 7px 6px; min-width: 0; width: 100%; box-sizing: border-box; }
 textarea { resize: vertical; min-height: 84px; }
 /* configuration dialog: one row per repo */
 .sheet.sheet-config { max-width: 1240px; }
@@ -327,6 +328,18 @@ textarea { resize: vertical; min-height: 84px; }
 .cab-slot.out { background: #0b1016; border: 1px dashed #2c3548; }
 .cab-slot.new { box-shadow: 0 0 0 1px var(--cyan); }
 .sub-list { display: grid; gap: 6px; max-height: 60vh; overflow-y: auto; }
+.browse-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.browse-tools input { flex: 1 1 220px; min-width: 0; }
+.browse-tools select { flex: 0 1 200px; width: auto; min-width: 0; }
+.browse-tools input, .browse-tools select { height: 36px; font-size: 12px; }
+.browse-list { display: grid; gap: 6px; }
+.browse-list .order-row { border-top: 1px solid var(--line); padding-top: 6px; }
+.browse-list .todo-item { border-top: 1px solid var(--line); color: var(--fg); }
+.browse-list .todo-item .m, .browse-list .todo-item .a { color: var(--muted); }
+.browse-pager { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; font-size: 11px; color: var(--muted); }
+.browse-pager .btns { display: flex; gap: 8px; }
+.box-more { justify-self: start; min-height: 0; height: 28px; padding: 0 8px; font-size: 10px; }
+@media (max-width: 720px) { .browse-list .order-row { grid-template-columns: 96px minmax(0, 1fr); } .browse-list .order-row .to { grid-column: 1 / -1; } }
 .sub-row { display: grid; grid-template-columns: minmax(0, 1fr) 90px 150px auto; gap: 10px; align-items: center; border-top: 1px solid var(--line); padding-top: 6px; font-size: 12px; }
 .sub-row b { color: var(--fg-strong); margin-right: 6px; }
 .sub-row small { display: block; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
@@ -440,6 +453,7 @@ body.no-motion * { animation: none !important; }
     <div class="brand"><span class="emblem" id="emblem" aria-hidden="true"></span><h1>STATION</h1><span class="sub" id="open-text">Connecting…</span><span class="clock" id="ship-clock"></span></div>
     <div class="actions">
       <button class="btn btn-amber" id="wait-btn" type="button" hidden><span class="mark">!</span><span id="wait-text"></span></button>
+      <button class="btn btn-amber" id="nodisp-btn" type="button" hidden><span class="mark">!</span><span id="nodisp-text"></span></button>
       <button class="btn btn-dark" id="prop-btn" type="button" hidden></button>
       <button class="pill" id="work-pill" type="button" aria-pressed="false" data-tr-title="Marks the robots at work in the station" title="Marks the robots at work in the station"><i></i><span id="work-text">0 trabajando</span></button>
       <button class="btn btn-cyan" id="new-order" type="button" data-tr="+ GIVE ORDER">+ GIVE ORDER</button>
@@ -475,6 +489,9 @@ body.no-motion * { animation: none !important; }
 <script>
 const INK = "#0b0f18";
 const LEASE_MS = 5 * 60 * 1000;
+// Rows per page in the full lists, handoffs shown per room on the bridge, and
+// the dispatcher's limit of open issues read per repo.
+const BROWSE_PAGE = 15, HANDOFFS_PER_ROOM = 5, ISSUES_CAP = 100;
 const STALE_MS = 10 * 60 * 1000;
 const CLOSED_VISIBLE_MS = 3 * 60 * 60 * 1000;
 const NEW_AGENT_MS = 7 * 24 * 60 * 60 * 1000;
@@ -915,6 +932,7 @@ const MAX_VISITORS = 2;
 const ST = trTable({ working: { label: "Working", color: "#6fe3f5" }, waiting: { label: "Waiting for your OK", color: "#ffb43a" }, standby: { label: "Standing by", color: "#9fb0cf" }, offline: { label: "No signal", color: "#e0564f" }, closed: { label: "Closed", color: "#6b7487" } });
 const OST = trTable({ proposed: { label: "Proposed", color: "#c9a7ff" }, rejected: { label: "Rejected", color: "#6b7487" }, pending: { label: "Pending", color: "#c9cfd9" }, claimed: { label: "In progress", color: "#6fe3f5" }, delivered: { label: "Delivered", color: "#7fd6a0" }, needs_click: { label: "Needs your click", color: "#ffb43a" }, failed: { label: "Not delivered", color: "#e0564f" } });
 const MAPC = { waiting: ["#3a2a0e", "#ffb43a", "#ffd27a"], working: ["#0f3a44", "#6fe3f5", "#bff6ff"], standby: ["#1b2538", "#7f93b8", "#b9c6de"], offline: ["#2a1517", "#e0564f", "#f0a19c"], dark: ["#0b1016", "#1d2433", "#4a5366"] };
+let dispatchersRead = false;
 let db = null, sessions = [], orders = [], dispatchers = [], configModels = {}, agentsCatalog = {}, handoffs = {}, departmentsVersion = 0;
 let view = "station";
 
@@ -1042,11 +1060,31 @@ function renderHeader(now, vs) {
   document.getElementById("wait-text").textContent = waiting.length === 1 ? tr("1 session waits for your OK") : tr("{n} sessions wait for your OK", { n: waiting.length });
   btn.onclick = () => waiting[0] && openSheet(waiting[0].sessionId);
   document.getElementById("work-text").textContent = tr("{n} working", { n: working.length });
+  // Approved orders that no dispatcher is picking up: the coordination session
+  // is closed or its process was stopped.
+  const stuck = orders.filter(o => o.status === "pending" && !hasDispatcher(o, now));
+  const nb = document.getElementById("nodisp-btn");
+  nb.hidden = !db || !dispatchersRead || stuck.length === 0;
+  document.getElementById("nodisp-text").textContent = stuck.length === 1 ? tr("NO DISPATCHER: 1 ORDER WAITS") : tr("NO DISPATCHER: {n} ORDERS WAIT", { n: stuck.length });
+  nb.title = tr("Nobody is delivering the approved orders. Write any message to the coordination session ({repo}) to wake it up.", { repo: COORDINATION || "—" });
+  nb.onclick = () => { if (view !== "station") setView("station"); document.getElementById("bridge").scrollIntoView({ behavior: "smooth", block: "start" }); };
   const proposals = orders.filter(o => o.status === "proposed");
   const pb = document.getElementById("prop-btn");
   pb.hidden = proposals.length === 0;
   pb.textContent = proposals.length === 1 ? tr("1 PROPOSED ORDER") : tr("{n} PROPOSED ORDERS", { n: proposals.length });
   pb.onclick = () => { if (view !== "station") setView("station"); document.getElementById("bridge").scrollIntoView({ behavior: "smooth", block: "start" }); };
+}
+
+// Whether a dispatcher with a fresh lease can pick up an order: the one of the
+// order's machine, when the order names one.
+function hasDispatcher(o, now) {
+  return dispatchers.some(d => now - (d.heartbeatAt || 0) < LEASE_MS && (!o.machine || d.machine === o.machine));
+}
+function dispatcherNote(o, now) {
+  if (o.status !== "pending" || !dispatchersRead || hasDispatcher(o, now)) return null;
+  return o.machine
+    ? tr("None on {machine}: write any message to the coordination session there to wake it up", { machine: o.machine })
+    : tr("None running: write any message to the coordination session to wake it up");
 }
 
 function deptState(folder, vs) {
@@ -1085,15 +1123,8 @@ function renderBridge(now, vs) {
     })));
   const recent = [...orders].sort((a, c) => (c.createdAt || 0) - (a.createdAt || 0)).slice(0, 6);
   const ob = el("div", { class: "orders-box" }, el("span", { class: "box-title" }, tr("RECENT ORDERS")),
-    recent.length ? recent.map(o => {
-      const meta = OST[o.status] || { label: o.status, color: "#c9cfd9" };
-      const to = `${deptOf(o.folder).name} · ${o.deliveredTitle || tr(({ any: "a free one", existing: "free only", new: "new session" })[o.mode] || "") || ""}`;
-      return el("div", { class: "order-row clickable", role: "button", tabindex: "0", title: tr("See the whole order"), onclick: () => openOrderDetail(o.id) },
-        el("span", { class: "dotlbl", style: { color: meta.color } }, el("i", { style: { background: meta.color } }), meta.label),
-        el("span", { class: "txt", style: { color: "#e6ebf2" }, text: o.text || "" }),
-        el("span", { class: "to", style: { color: "var(--muted)" }, text: to }),
-        el("span", { class: "when", style: { color: "#6b7487", textAlign: "right" }, text: ago(o.createdAt, now) }));
-    }) : el("span", { class: "sub", text: tr("You have not given any order yet. Use + GIVE ORDER.") }));
+    orders.length > recent.length ? el("button", { class: "btn btn-ghost box-more", type: "button", onclick: () => openBrowse({ kind: "orders" }) }, tr("SEE ALL · {n}", { n: orders.length })) : null,
+    recent.length ? recent.map(o => orderRow(o, now)) : el("span", { class: "sub", text: tr("You have not given any order yet. Use + GIVE ORDER.") }));
   const proposals = orders.filter(o => o.status === "proposed").sort((a, c) => (c.createdAt || 0) - (a.createdAt || 0));
   const pbox = proposals.length ? el("div", { class: "proposals" },
     el("span", { class: "box-title", style: { color: "#c9a7ff" } }, tr("AGENTS' PROPOSALS · {n} · delivered only if you approve them", { n: proposals.length })),
@@ -1228,6 +1259,76 @@ function openSubagents(folder) {
     el("div", { class: "sub-list" }, rows)));
 }
 
+// The full list of orders or of open handoffs, newest first: a text search,
+// a filter (an order's state, a handoff's room) and pages of BROWSE_PAGE rows.
+// Opening an item from it leaves a way back to the same page.
+let browse = null, browseBack = null;
+function openBrowse(next) {
+  browse = { kind: next.kind, q: next.q || "", filter: next.filter || "", page: next.page || 0 };
+  renderBrowse();
+}
+const foldText = t => String(t || "").toLocaleLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+function browseItems() {
+  if (browse.kind === "orders") {
+    return [...orders].sort((a, c) => (c.createdAt || 0) - (a.createdAt || 0))
+      .filter(o => !browse.filter || o.status === browse.filter)
+      .map(o => ({ o, text: [o.text, o.reason, o.note, o.deliveredTitle, o.agent, o.base, deptOf(o.folder).name, o.folder, o.proposedBy?.title, (OST[o.status] || {}).label, o.handoff?.number ? "#" + o.handoff.number : ""].join(" ") }));
+  }
+  const byFolder = handoffs.byFolder || {};
+  return folderList().filter(f => !f.startsWith("#") && showsIssues(f) && (!browse.filter || f === browse.filter))
+    .flatMap(f => (byFolder[f] || []).map(i => ({ f, i, text: ["#" + i.number, i.title, i.excerpt, i.from, deptOf(f).name, f].join(" ") })))
+    .sort((a, c) => (Date.parse(c.i.createdAt) || 0) - (Date.parse(a.i.createdAt) || 0));
+}
+function renderBrowse() {
+  const now = Date.now(), isOrders = browse.kind === "orders";
+  const words = foldText(browse.q).split(/\s+/).filter(Boolean);
+  const all = browseItems(), found = words.length ? all.filter(x => { const t = foldText(x.text); return words.every(w => t.includes(w)); }) : all;
+  const pages = Math.max(1, Math.ceil(found.length / BROWSE_PAGE));
+  browse.page = Math.min(Math.max(0, browse.page), pages - 1);
+  const shown = found.slice(browse.page * BROWSE_PAGE, (browse.page + 1) * BROWSE_PAGE);
+  const goTo = page => { browse.page = page; renderBrowse(); };
+  const back = { ...browse };
+  const rows = shown.map(x => isOrders
+    ? orderRow(x.o, now, () => { browseBack = () => openBrowse(back); openOrderDetail(x.o.id); })
+    : handoffRow(x.f, x.i, now, () => { browseBack = () => openBrowse(back); openHandoffDetail(x.f, x.i); }));
+  const search = el("input", { type: "search", id: "browse-q", placeholder: tr(isOrders ? "Search in the orders" : "Search in the handoffs"), "aria-label": tr("Search"), spellcheck: "false",
+    oninput: e => { browse.q = e.target.value; browse.page = 0; renderBrowse(); } });
+  search.value = browse.q;
+  const options = isOrders
+    ? [["", tr("All states")]].concat(Object.entries(OST).map(([k, m]) => [k, m.label]))
+    : [["", tr("All rooms")]].concat(folderList().filter(f => !f.startsWith("#") && showsIssues(f) && (handoffs.byFolder?.[f] || []).length).map(f => [f, deptOf(f).name]));
+  const filter = el("select", { id: "browse-filter", "aria-label": tr(isOrders ? "State" : "Room"), onchange: e => { browse.filter = e.target.value; browse.page = 0; renderBrowse(); } },
+    options.map(([v, label]) => { const o = el("option", { value: v, text: label }); if (v === browse.filter) o.selected = true; return o; }));
+  const from = found.length ? browse.page * BROWSE_PAGE + 1 : 0, to = browse.page * BROWSE_PAGE + shown.length;
+  const prev = el("button", { class: "btn btn-ghost", type: "button", onclick: () => goTo(browse.page - 1) }, tr("‹ PREVIOUS"));
+  const next = el("button", { class: "btn btn-ghost", type: "button", onclick: () => goTo(browse.page + 1) }, tr("NEXT ›"));
+  prev.disabled = browse.page === 0;
+  next.disabled = browse.page >= pages - 1;
+  openInfo(el("div", { class: "card wide", role: "dialog", "aria-label": tr(isOrders ? "All orders" : "All open handoffs") },
+    el("div", { class: "card-head" }, el("span", { class: "box-title" }, `${tr(isOrders ? "ALL ORDERS" : "ALL OPEN HANDOFFS")} · ${all.length}`), el("button", { class: "btn btn-ghost", type: "button", onclick: closeModal }, tr("CLOSE"))),
+    el("div", { class: "browse-tools" }, search, filter),
+    el("div", { class: "browse-list" }, rows.length ? rows : el("span", { class: "sub", text: tr(words.length || browse.filter ? "Nothing matches." : isOrders ? "There are no orders." : "There are no open handoffs.") })),
+    el("div", { class: "browse-pager" },
+      el("span", { text: found.length ? tr("{from}–{to} of {n} · page {page} of {pages}", { from, to, n: found.length, page: browse.page + 1, pages }) : "" }),
+      el("span", { class: "btns" }, prev, next))));
+  // The search keeps the focus while typing, since each keystroke draws the window again.
+  const box = document.getElementById("browse-q");
+  if (box && browse.q && document.activeElement !== box) { box.focus({ preventScroll: true }); box.setSelectionRange(box.value.length, box.value.length); }
+}
+function orderRow(o, now, onOpen) {
+  const meta = OST[o.status] || { label: o.status, color: "#c9cfd9" };
+  const to = `${deptOf(o.folder).name} · ${o.deliveredTitle || tr(({ any: "a free one", existing: "free only", new: "new session" })[o.mode] || "") || ""}`;
+  return el("div", { class: "order-row clickable", role: "button", tabindex: "0", title: tr("See the whole order"), onclick: onOpen || (() => openOrderDetail(o.id)) },
+    el("span", { class: "dotlbl", style: { color: meta.color } }, el("i", { style: { background: meta.color } }), meta.label),
+    el("span", { class: "txt", style: { color: "#e6ebf2" }, text: o.text || "" }),
+    el("span", { class: "to", style: { color: "var(--muted)" }, text: to }),
+    el("span", { class: "when", style: { color: "#6b7487", textAlign: "right" }, text: ago(o.createdAt, now) }));
+}
+// Back to the list an order or a handoff was opened from.
+function browseBackButton() {
+  return browseBack ? el("button", { class: "btn btn-ghost", type: "button", onclick: () => { const go = browseBack; browseBack = null; go(); } }, tr("‹ LIST")) : null;
+}
+
 // Orders still open: first those that need you, then those on their way.
 function pendingBox(now) {
   const RANK = { needs_click: 0, failed: 1, pending: 2, claimed: 3 };
@@ -1263,20 +1364,31 @@ function handoffBox(now) {
   const issueCount = folders.reduce((n, f) => n + byFolder[f].length, 0);
   const unread = folderList().filter(f => !f.startsWith("#") && showsIssues(f) && typeof problems[f] === "string");
   if (!issueCount && !unread.length) return null;
-  const box = el("div", { class: "todo" }, el("span", { class: "box-title", style: { color: "#ffcf6e" } }, `${tr("OPEN HANDOFFS")} · ${issueCount}`));
+  const box = el("div", { class: "todo" }, el("span", { class: "box-title", style: { color: "#ffcf6e" } }, `${tr("OPEN HANDOFFS")} · ${issueCount}`),
+    issueCount > HANDOFFS_PER_ROOM ? el("button", { class: "btn btn-ghost box-more", type: "button", onclick: () => openBrowse({ kind: "handoffs" }) }, tr("SEE THEM ALL · {n}", { n: issueCount })) : null);
   for (const f of unread) box.append(el("div", { class: "todo-item" }, el("span", { class: "t", text: deptOf(f).name }), el("span", { class: "m", text: problems[f] })));
   // One block per department, in its accent colour, so each heading clearly
   // owns the issues under it.
   for (const f of folders) {
     const d = deptOf(f), list = byFolder[f];
     box.append(el("div", { class: "todo-dept", style: { "--acc": d.accent } },
-      el("div", { class: "todo-dept-head" }, el("span", { text: d.name.toUpperCase() }), el("span", { text: pl(list.length, "handoff", "handoffs") })),
-      list.map(i => el("div", { class: "todo-item clickable", role: "button", tabindex: "0", title: tr("See the handoff"), onclick: () => openHandoffDetail(f, i) },
-        el("span", { class: "t", text: `#${i.number} ${i.title}` }),
-        el("span", { class: "a", text: i.createdAt ? ago(Date.parse(i.createdAt), now) : "" }),
-        i.from ? el("span", { class: "m", text: tr("Asked by {who}", { who: i.from }) }) : null))));
+      el("div", { class: "todo-dept-head" }, el("span", { text: d.name.toUpperCase() }), el("span", { text: handoffCount(list) })),
+      list.slice(0, HANDOFFS_PER_ROOM).map(i => handoffRow(f, i, now)),
+      list.length > HANDOFFS_PER_ROOM ? el("button", { class: "btn btn-ghost box-more", type: "button", onclick: () => openBrowse({ kind: "handoffs", filter: f }) }, tr("{n} MORE IN {room}", { n: list.length - HANDOFFS_PER_ROOM, room: d.name.toUpperCase() })) : null));
   }
   return box;
+}
+
+function handoffRow(folder, i, now, onOpen) {
+  return el("div", { class: "todo-item clickable", role: "button", tabindex: "0", title: tr("See the handoff"), onclick: onOpen || (() => openHandoffDetail(folder, i)) },
+    el("span", { class: "t", text: `#${i.number} ${i.title}` }),
+    el("span", { class: "a", text: i.createdAt ? ago(Date.parse(i.createdAt), now) : "" }),
+    i.from ? el("span", { class: "m", text: tr("Asked by {who}", { who: i.from }) }) : null);
+}
+// The dispatcher reads at most ISSUES_CAP open issues per repo, the newest; a
+// room that reaches it may have more.
+function handoffCount(list) {
+  return list.length >= ISSUES_CAP ? tr("{n}+ handoffs (the newest)", { n: ISSUES_CAP }) : pl(list.length, "handoff", "handoffs");
 }
 
 // Open issues for this department, read by the dispatcher from GitHub or GitLab.
@@ -1292,7 +1404,7 @@ function board(folder) {
       class: "note", type: "button", title: `#${i.number} ${i.title}${i.from ? " · " + tr("asked by {who}", { who: i.from }) : ""}`,
       style: { background: deptOf(SENDERS[i.from] || "").accent || "#e8d27a", transform: `rotate(${[-4, 3, -2, 5, -3, 2, -5, 4][k]}deg)` },
       onclick: ev => { ev.stopPropagation(); openHandoffDetail(folder, i); } }, "#" + i.number)),
-      list.length > shown.length ? el("span", { class: "note-more", text: "+" + (list.length - shown.length) }) : null));
+      list.length > shown.length ? el("button", { class: "note-more", type: "button", title: tr("See all the handoffs of {room}", { room: deptOf(folder).name }), onclick: ev => { ev.stopPropagation(); openBrowse({ kind: "handoffs", filter: folder }); } }, "+" + (list.length - shown.length)) : null));
 }
 
 // Orders an agent proposed travel by pneumatic tube from its room to the target
@@ -2177,7 +2289,7 @@ function showModal(content, onClose) {
   if (!hadFocusInside) content.querySelector("input:not([disabled]), textarea, select, button")?.focus({ preventScroll: true });
 }
 function closeModal() {
-  form = null; cfgForm = null; modalOnClose = null;
+  form = null; cfgForm = null; modalOnClose = null; browse = null; browseBack = null;
   const m = document.getElementById("modal");
   m.hidden = true; m.replaceChildren();
   if (modalReturnFocus?.isConnected) modalReturnFocus.focus({ preventScroll: true });
@@ -2307,6 +2419,8 @@ function openOrderDetail(id, isEditing = false) {
     ["To", deptOf(o.folder).name + (o.agent ? ` · ${tr("agent")} ${o.agent}` : "")],
     ["Destination", destinationOf(o)],
     ["Model", o.model ? modelLabel(o.model) : tr("The session's own")],
+    ["Starts from", baseOf(o)],
+    ["Dispatcher", dispatcherNote(o, Date.now())],
     ["Delivered to", o.deliveredTitle || null],
     ["Proposed by", o.proposedBy ? `${o.proposedBy.title || deptOf(o.proposedBy.folder).name} (${deptOf(o.proposedBy.folder).name})` : null],
     ["Reason", o.reason || null],
@@ -2324,12 +2438,17 @@ function openOrderDetail(id, isEditing = false) {
   const openAt = sessionLink(holder), openAsker = o.proposedBy?.sessionId !== holder ? sessionLink(o.proposedBy?.sessionId) : null;
   const editor = isEditing ? el("textarea", { id: "order-edit", rows: "14", "aria-label": tr("Order text"), spellcheck: "true" }) : null;
   if (editor) editor.value = o.text || "";
+  // The branch the work starts from; left empty, the branch the room's repo is
+  // on when the order is delivered.
+  const baseInput = isEditing ? el("input", { type: "text", id: "order-base", spellcheck: "false", placeholder: tr("The branch the repo is on when it is delivered") }) : null;
+  if (baseInput) baseInput.value = typeof o.base === "string" && !o.baseIsDefault ? o.base : "";
   const card = el("div", { class: "card wide", role: "dialog", "aria-label": tr("Order") },
-    el("div", { class: "card-head" }, el("span", { class: "box-title" }, isEditing ? tr("EDIT ORDER") : tr("ORDER")), el("button", { class: "btn btn-ghost", type: "button", onclick: closeModal }, tr("CLOSE"))),
+    el("div", { class: "card-head" }, el("span", { class: "box-title" }, isEditing ? tr("EDIT ORDER") : tr("ORDER")), el("span", { style: { display: "flex", gap: "8px" } }, browseBackButton(), el("button", { class: "btn btn-ghost", type: "button", onclick: closeModal }, tr("CLOSE")))),
     editor || el("div", { class: "detail-text", text: o.text || "" }),
+    baseInput ? el("label", { class: "field", for: "order-base" }, el("span", {}, tr("STARTS FROM THE BRANCH")), baseInput) : null,
     isEditing ? el("div", { style: { display: "flex", flexWrap: "wrap", gap: "10px" } },
-      el("button", { class: "btn btn-cyan", type: "button", onclick: () => saveOrderText(o.id, editor.value, true) }, tr("SAVE AND APPROVE")),
-      el("button", { class: "btn btn-dark", type: "button", onclick: () => saveOrderText(o.id, editor.value, false) }, tr("SAVE")),
+      el("button", { class: "btn btn-cyan", type: "button", onclick: () => saveOrderText(o.id, editor.value, true, baseInput.value) }, tr("SAVE AND APPROVE")),
+      el("button", { class: "btn btn-dark", type: "button", onclick: () => saveOrderText(o.id, editor.value, false, baseInput.value) }, tr("SAVE")),
       el("button", { class: "btn btn-ghost", type: "button", onclick: () => openOrderDetail(o.id) }, tr("CANCEL"))) : null,
     el("dl", { class: "facts" }, rows.flatMap(([k, v]) => [el("dt", { text: tr(k) }), typeof v === "string" ? el("dd", { text: v }) : el("dd", {}, v)])),
     !isEditing && (o.status === "proposed" || canDiscard || canResend || openAt || openAsker) ? el("div", { style: { display: "flex", flexWrap: "wrap", gap: "10px" } },
@@ -2383,6 +2502,8 @@ async function resendOrder(id, dest) {
     await db.doc(`orders/${id}`).update({
       status: "pending", attempt: (Number(o.attempt) || 1) + 1, resentAt: now, updatedAt: now,
       deliveredTo: null, deliveredTitle: null, deliveredAt: null, spawnedAt: null, claimedBy: null, claimedAt: null, note: null,
+      // A branch taken from the repo is read again; one the order named stays.
+      ...(o.baseIsDefault ? { base: null, baseCommit: null, baseIsDefault: null } : {}),
       // Another destination drops the session the order was meant for.
       ...(target ? { mode: target.mode, sessionId: null, machine: null, replyTo: null } : {}),
     });
@@ -2396,21 +2517,31 @@ async function resendOrder(id, dest) {
 // never cut, a longer one is refused whole.
 const ORDER_TEXT_MAX = 20000;
 // Saves the user's edit of a proposal, and approves it in the same write when asked.
-async function saveOrderText(id, text, approve) {
+async function saveOrderText(id, text, approve, base) {
   const o = orders.find(x => x.id === id);
   if (!db || !o) return;
   if (o.status !== "proposed") { toast(tr("This order is no longer proposed, so it cannot be edited.")); return openOrderDetail(id); }
   const clean = String(text || "").trim();
   if (!clean) { toast(tr("The order cannot be empty.")); return; }
   if (clean.length > ORDER_TEXT_MAX) { toast(tr("The order has {n} characters and {max} fit. Shorten it: nothing was saved.", { n: clean.length, max: ORDER_TEXT_MAX })); return; }
+  const branch = String(base || "").trim();
+  if (branch && !isBranchName(branch)) { toast(tr("\"{branch}\" is not a branch name: write it as git shows it, or leave it empty. Nothing was saved.", { branch: branch.slice(0, 80) })); return; }
   const now = Date.now();
   try {
-    await db.doc(`orders/${id}`).update({ text: clean, editedAt: now, updatedAt: now, ...(approve ? { status: "pending", approvedAt: now } : {}) });
+    await db.doc(`orders/${id}`).update({ text: clean, base: branch || null, baseCommit: null, baseIsDefault: null, editedAt: now, updatedAt: now, ...(approve ? { status: "pending", approvedAt: now } : {}) });
     closeModal();
     toast(approve ? tr("Order edited and approved.") : tr("Order edited. It still waits for your approval."));
   } catch (error) {
     toast(tr("The order could not be saved ({code}). Try again.", { code: error?.code || "error" }));
   }
+}
+// A branch name an order may start from, as the plugin accepts it.
+const isBranchName = name => typeof name === "string" && /^[A-Za-z0-9._][A-Za-z0-9._/-]{0,199}$/.test(name) && !name.includes("..") && !name.endsWith("/") && !name.endsWith(".lock");
+// Where an order's work starts: the branch it names, or the one its room's
+// repo was on when the card was prepared, with its commit.
+function baseOf(o) {
+  if (typeof o.base !== "string" || !o.base) return ["proposed", "pending", "claimed"].includes(o.status) ? tr("The branch the repo is on when it is delivered") : null;
+  return `${o.base}${o.baseCommit ? ` · ${o.baseCommit}` : ""}${o.baseIsDefault ? ` (${tr("the branch the repo was on")})` : ""}`;
 }
 // The app link of a session the station knows, when it reported one.
 // A link that looks and sits like the buttons beside it.
@@ -2422,7 +2553,7 @@ function sessionLink(id) {
 function openHandoffDetail(folder, i) {
   const rows = [["Room", deptOf(folder).name], ["Asked by", i.from || null], ["Opened", i.createdAt ? when(Date.parse(i.createdAt)) : null], ["Issue", `#${i.number}`]].filter(([, v]) => v);
   openInfo(el("div", { class: "card wide", role: "dialog", "aria-label": tr("Handoff") },
-    el("div", { class: "card-head" }, el("span", { class: "box-title" }, tr("HANDOFF")), el("button", { class: "btn btn-ghost", type: "button", onclick: closeModal }, tr("CLOSE"))),
+    el("div", { class: "card-head" }, el("span", { class: "box-title" }, tr("HANDOFF")), el("span", { style: { display: "flex", gap: "8px" } }, browseBackButton(), el("button", { class: "btn btn-ghost", type: "button", onclick: closeModal }, tr("CLOSE")))),
     el("div", { class: "detail-text", text: i.title || "" }),
     i.excerpt ? el("p", { class: "handoff-excerpt", text: i.excerpt }) : null,
     el("dl", { class: "facts" }, rows.flatMap(([k, v]) => [el("dt", { text: tr(k) }), el("dd", { text: v })])),
@@ -2673,7 +2804,7 @@ function moveToDeck(key, index) {
 }
 function openConfig() {
   form = null;
-  cfgForm = { fromTemplate: false, title: typeof rawDepartments.title === "string" ? rawDepartments.title : "", theme: typeof rawDepartments.theme === "string" && rawDepartments.theme ? rawDepartments.theme : THEME || DEFAULT_THEME, language: LANG, coordination: COORDINATION, repos: rowsFrom(rawDepartments), decks: decksFrom(rawDepartments.layout), offStation: new Set(OFF_STATION), room: null, err: "", isDirty: false, isClosing: false };
+  cfgForm = { fromTemplate: false, title: typeof rawDepartments.title === "string" ? rawDepartments.title : "", theme: typeof rawDepartments.theme === "string" && rawDepartments.theme ? rawDepartments.theme : THEME || DEFAULT_THEME, language: LANG, coordination: COORDINATION, keepAwake: rawDepartments.keepAwake === true, repos: rowsFrom(rawDepartments), decks: decksFrom(rawDepartments.layout), offStation: new Set(OFF_STATION), room: null, err: "", isDirty: false, isClosing: false };
   if (!cfgForm.repos.length) cfgForm.repos.push(emptyRow());
   renderConfig();
 }
@@ -2754,8 +2885,11 @@ function renderConfig() {
           if (key === cfgForm.language) o.selected = true;
           return o;
         }))),
-      el("label", { class: "field", for: "cfg-coordination" }, el("span", {}, tr("COORDINATION")), coordinationSelect())),
+      el("label", { class: "field", for: "cfg-coordination" }, el("span", {}, tr("COORDINATION")), coordinationSelect()),
+      el("div", { class: "field" }, el("span", {}, tr("KEEP AWAKE")),
+        el("button", { class: "btn btn-ghost", id: "cfg-keep-awake", type: "button", "aria-pressed": String(cfgForm.keepAwake), style: { minHeight: "0", height: "34px", color: cfgForm.keepAwake ? "var(--cyan)" : "" }, onclick: () => { cfgForm.keepAwake = !cfgForm.keepAwake; markDirty(); renderConfig(); } }, cfgForm.keepAwake ? tr("YES") : tr("NO")))),
     el("p", { class: "hint", text: tr("The coordination is the repo whose Claude Code session delivers the orders you approve; it has no room on the station. A clone of agent-station, which holds this page, is the recommended one, and it is chosen for you once you add it. Keep a session open in it: after restarting Claude Code, or opening that session again, send it any message to wake it up, and the bridge shows the dispatcher running.") }),
+    el("p", { class: "hint", text: tr("KEEP AWAKE: the app stops a session's process after a while without activity, and with the coordination session's goes the dispatcher, so approved orders wait until someone writes to it. Switched on, the session that dispatches keeps a command running in the background, which costs no tokens, so the app leaves it running and orders are delivered at any hour. While it runs, the app may count the session as busy, and then its setting to keep the computer awake while Claude works keeps the computer from going to sleep on its own.") }),
     el("div", { class: "field" }, el("span", {}, tr("STATION REPOS")),
       el("p", { class: "hint", text: tr("One row per repo, with the remote of its origin (for example github.com/organization/repo). A remote ending in /* takes every repo of that group, each with its own room. The rooms are drawn in the order of this list: move them with ▲ and ▼. Each room's name, what its agent does and its look are in SETTINGS. ISSUES says whether the station shows the repo's open issues.") }),
       el("div", { class: "repo-head" }, el("span", { text: tr("REMOTE") }), el("span", { text: tr("DECK") }), el("span"), el("span", { text: tr("ISSUES") }), el("span", { text: tr("ORDER") }), el("span")),
@@ -2858,6 +2992,7 @@ async function saveConfig() {
     }).filter(Boolean),
   })).filter(g => g.items.length);
   const doc = { ...base, title, theme: cfgForm.theme, language: cfgForm.language, coordination, repos, departments, layout, offStation: [...cfgForm.offStation] };
+  if (cfgForm.keepAwake) doc.keepAwake = true; else delete doc.keepAwake;
   if (Array.isArray(rawDepartments.aliases)) doc.aliases = rawDepartments.aliases; else delete doc.aliases;
   try {
     await db.doc("config/departments").set(doc);
@@ -3080,6 +3215,34 @@ const ES = {
   "Rest and coffee": "Descanso y café",
   "Battery recharge": "Recarga de baterías",
   "COORDINATION": "COORDINACIÓN",
+  "KEEP AWAKE": "MANTENER DESPIERTO",
+  "SEE ALL · {n}": "VER TODAS · {n}",
+  "SEE THEM ALL · {n}": "VER TODOS · {n}",
+  "{n} MORE IN {room}": "{n} MÁS EN {room}",
+  "{n}+ handoffs (the newest)": "{n}+ encargos (los más nuevos)",
+  "See all the handoffs of {room}": "Ver todos los encargos de {room}",
+  "Search in the orders": "Buscar en las órdenes",
+  "Search in the handoffs": "Buscar en los encargos",
+  "Search": "Buscar",
+  "All states": "Todos los estados",
+  "All rooms": "Todas las salas",
+  "All orders": "Todas las órdenes",
+  "All open handoffs": "Todos los encargos abiertos",
+  "ALL ORDERS": "TODAS LAS ÓRDENES",
+  "ALL OPEN HANDOFFS": "TODOS LOS ENCARGOS ABIERTOS",
+  "Nothing matches.": "No hay resultados.",
+  "There are no orders.": "No hay órdenes.",
+  "There are no open handoffs.": "No hay encargos abiertos.",
+  "{from}–{to} of {n} · page {page} of {pages}": "{from}–{to} de {n} · página {page} de {pages}",
+  "‹ PREVIOUS": "‹ ANTERIOR",
+  "NEXT ›": "SIGUIENTE ›",
+  "‹ LIST": "‹ LISTA",
+  "KEEP AWAKE: the app stops a session's process after a while without activity, and with the coordination session's goes the dispatcher, so approved orders wait until someone writes to it. Switched on, the session that dispatches keeps a command running in the background, which costs no tokens, so the app leaves it running and orders are delivered at any hour. While it runs, the app may count the session as busy, and then its setting to keep the computer awake while Claude works keeps the computer from going to sleep on its own.": "MANTENER DESPIERTO: la app detiene el proceso de una sesión tras un rato sin actividad, y con el de la sesión de coordinación se para el despachador, así que las órdenes aprobadas esperan hasta que alguien le escribe. Si lo activas, la sesión que despacha mantiene un comando en segundo plano, que no gasta tokens, para que la app no la detenga y las órdenes se entreguen a cualquier hora. Mientras corre, puede que la app cuente la sesión como ocupada, y entonces su ajuste de no suspender el ordenador mientras Claude trabaja impide que el ordenador se suspenda solo.",
+  "NO DISPATCHER: 1 ORDER WAITS": "SIN DESPACHADOR: 1 ORDEN ESPERA",
+  "NO DISPATCHER: {n} ORDERS WAIT": "SIN DESPACHADOR: {n} ÓRDENES ESPERAN",
+  "Nobody is delivering the approved orders. Write any message to the coordination session ({repo}) to wake it up.": "Nadie está entregando las órdenes aprobadas. Escribe cualquier cosa a la sesión de coordinación ({repo}) para despertarla.",
+  "None on {machine}: write any message to the coordination session there to wake it up": "Ninguno en {machine}: escribe cualquier cosa a la sesión de coordinación de ese ordenador para despertarla",
+  "None running: write any message to the coordination session to wake it up": "Ninguno activo: escribe cualquier cosa a la sesión de coordinación para despertarla",
   "Dispatcher": "Despachador",
   "Bridge · dispatcher running on {machine}": "Puente de mando · despachador activo en {machine}",
   "Bridge · no dispatcher, orders wait": "Puente de mando · sin despachador, las órdenes esperan",
@@ -3239,6 +3402,11 @@ const ES = {
   "OPEN ON GITHUB": "ABRIR EN GITHUB",
   "OPEN ON GITLAB": "ABRIR EN GITLAB",
   "OPEN THE ISSUE": "ABRIR LA ISSUE",
+  "Starts from": "Parte de",
+  "STARTS FROM THE BRANCH": "PARTE DE LA RAMA",
+  "The branch the repo is on when it is delivered": "La rama en la que esté el repo al entregarla",
+  "the branch the repo was on": "la rama en la que estaba el repo",
+  "\"{branch}\" is not a branch name: write it as git shows it, or leave it empty. Nothing was saved.": "«{branch}» no es un nombre de rama: escríbela como la muestra git, o déjala vacía. No se ha guardado nada.",
   "untitled": "sin título",
   "Take the handoff #{n} \"{title}\" of this repo{link}. Read it with {view}, do what it asks and close it with the commit or the pull or merge request that solves it. If anything is unclear, ask me before you start.": "Atiende el encargo #{n} «{title}» de este repo{link}. Léelo con {view}, haz lo que pide y ciérralo con el commit o la pull o merge request que lo resuelva. Si algo no está claro, pregúntame antes de empezar.",
   "ROOM SETTINGS": "AJUSTES DE LA SALA",
@@ -3465,7 +3633,7 @@ async function start() {
   };
   db.collection("sessions").onSnapshot(snap => { sessions = snap.docs.map(d => ({ sessionId: d.id, ...d.data() })); sessionsRead = true; touch(); }, onError);
   db.collection("orders").onSnapshot(snap => { orders = snap.docs.map(d => ({ id: d.id, ...d.data() })); touch(); }, onError);
-  db.collection("dispatchers").onSnapshot(snap => { dispatchers = snap.docs.map(d => d.data()); touch(); }, onError);
+  db.collection("dispatchers").onSnapshot(snap => { dispatchers = snap.docs.map(d => d.data()); dispatchersRead = true; touch(); }, onError);
   db.doc("config/models").onSnapshot(snap => { configModels = snap.exists ? snap.data() : {}; }, onError);
   db.doc("config/agents").onSnapshot(snap => { agentsCatalog = snap.exists ? snap.data() : {}; touch(); }, onError);
   await loadSeed();
