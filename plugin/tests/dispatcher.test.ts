@@ -99,7 +99,7 @@ function stubFolders(on: any, agentsIn: Record<string, Array<{ name: string; kin
 }
 
 function stubEngine(on: any, mcpCalls: any[], appSessions: any[] = [], statuses: any[] = [], sendReply: (sessionId: string) => string = () => 'delivered (delivery: delivered; message_id: m1)', cwd = 'C:/work/coord') {
-  mock.env(on, { COMPUTERNAME: 'TESTPC' })
+  mock.env(on, { COMPUTERNAME: 'TESTPC', USERPROFILE: 'C:/Users/me' })
   on('session.cwd' as any, () => ({ value: cwd }))
   on('session.id' as any, () => ({ value: 'engine-id' }))
   on('ui.status' as any, (_$: any, e: any) => { statuses.push(e?.text ?? e); return { value: null } })
@@ -735,7 +735,7 @@ test('handoffs of a GitLab repo are read with glab, and a repo on another host g
   const remotes = { 'C:/work/coord': 'https://github.com/acme/coord.git', 'C:/work/app': 'git@gitlab.com:acme/app.git', 'C:/work/legal': 'https://bitbucket.org/acme/legal.git' }
   stubGit(on, argv => {
     if (argv[0] === 'glab' && argv.includes('--hostname')) return argv.includes('gitlab.com') ? { exitCode: 0, stdout: 'Logged in' } : { exitCode: 1, stdout: '', stderr: 'not logged in' }
-    if (argv[0] === 'glab' && argv.includes('https://gitlab.com/acme/app')) return { exitCode: 0, stdout: JSON.stringify([{ iid: 7, title: 'Add the delta endpoint', web_url: 'https://gitlab.com/acme/app/-/work_items/7', created_at: '2026-10-16T10:00:00Z', labels: ['handoff', 'from-legal'], description: 'The app needs\n\na delta endpoint. ' + 'x'.repeat(400) }]) }
+    if (argv[0] === 'glab' && argv.includes('https://gitlab.com/acme/app')) return { exitCode: 0, stdout: JSON.stringify([{ iid: 7, title: 'Add the delta endpoint', web_url: 'https://gitlab.com/acme/app/-/work_items/7', created_at: '2026-10-16T10:00:00Z', labels: ['handoff', 'from-legal', 'doing'], assignees: [{ username: 'ana' }], description: 'The app needs\n\na delta endpoint. ' + 'x'.repeat(400) }]) }
     return { exitCode: 0, stdout: '[]' }
   }, remotes)
   stubFolders(on)
@@ -746,8 +746,10 @@ test('handoffs of a GitLab repo are read with glab, and a repo on another host g
   await clock.advance(5_000)
 
   const handoffs = db.read('config', 'handoffs')
-  expect(handoffs?.byFolder?.app?.[0]).toEqual({ number: 7, title: 'Add the delta endpoint', url: 'https://gitlab.com/acme/app/-/work_items/7', from: 'legal', createdAt: '2026-10-16T10:00:00Z', excerpt: `The app needs a delta endpoint. ${'x'.repeat(247)}…` })
+  expect(handoffs?.byFolder?.app?.[0]).toEqual({ number: 7, title: 'Add the delta endpoint', url: 'https://gitlab.com/acme/app/-/work_items/7', from: 'legal', labels: [], progressLabel: 'doing', assignees: ['ana'], createdAt: '2026-10-16T10:00:00Z', excerpt: `The app needs a delta endpoint. ${'x'.repeat(247)}…` })
   expect(handoffs?.views?.app).toBe('glab issue view <n> -R https://gitlab.com/acme/app')
+  // The command that marks an issue in progress, for the orders that hand it to an agent.
+  expect(handoffs?.marks?.app).toBe('glab issue update <n> -R https://gitlab.com/acme/app --label "in progress"')
   expect(String(handoffs?.problems?.legal)).toContain('bitbucket.org, which has no handoffs')
   expect(handoffs?.problems?.app).toBeUndefined()
   await clock.advance(60_000)
@@ -985,8 +987,12 @@ test('with macOS or Linux paths the dispatcher opens a new session in the repo\'
 
 // The keeper of the dispatcher: a background command that never ends, started
 // and stopped by the session that dispatches, as config/departments keepAwake says.
-function stubKeeperTools(on: any, calls: any[]) {
+// isBeating: whether the keeper's beat file holds a fresh time once a keeper started.
+function stubKeeperTools(on: any, calls: any[], isBeating = () => true) {
   let next = 0
+  on('fs.write' as any, () => ({ value: null }))
+  // An empty beat reads as no beat at all; a fresh one is a time ahead of any the test reaches.
+  on('fs.read' as any, (_$: any, e: any) => ({ value: String(e.path ?? e).endsWith('.beat') && next && isBeating() ? '99999999999' : '' }))
   on('tool.call', { tool: 'Bash' }, (_$: any, e: any) => {
     calls.push(e)
     return { result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: `bg${++next}` } } as any
@@ -1004,6 +1010,8 @@ test('the dispatcher keeps its session awake while keepAwake is on, and stops wh
   stubEngine(on, mcpCalls)
   stubGit(on)
   stubKeeperTools(on, toolCalls)
+  const stateWrites: any[] = []
+  on('state.set' as any, (_$: any, e: any, next: any) => { if (e.key === 'keeperTaskIds') stateWrites.push(e.value); return next(e) })
   const db = fakeOfficeDatabase(on)
   db.seed('config', 'departments', { ...STATION, keepAwake: true })
 
@@ -1012,6 +1020,8 @@ test('the dispatcher keeps its session awake while keepAwake is on, and stops wh
   const starts = () => toolCalls.filter(c => c.tool === 'Bash')
   expect(starts().length).toBe(1)
   expect(starts()[0].run_in_background).toBe(true)
+  // The id is kept in the session's state, so a reload of the plugin finds it.
+  expect(stateWrites.at(-1)).toEqual(['bg1'])
   expect(String(starts()[0].command)).toContain('agent-station-keep-awake')
 
   // One keeper only, however many polls go by.
@@ -1086,5 +1096,234 @@ test('an order whose branch exists only on origin says to use the remote one, an
   expect(order?.base).toBe('feature/x')
   expect(order?.baseCommit).toBe('c0ffee1')
   expect(order?.baseIsDefault).toBe(false)
+  await clock.advance(60_000)
+})
+
+test('the page asking to read the handoffs now has the dispatcher read them within a minute, once', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [])
+  let reads = 0
+  stubGit(on, () => { reads++; return { exitCode: 0, stdout: '[]' } })
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+  const afterStart = reads
+  expect(afterStart).toBeGreaterThan(0)
+
+  // Nothing asked: no read before the fifteen minutes.
+  await clock.advance(3 * 60_000)
+  expect(reads).toBe(afterStart)
+
+  db.seed('config', 'refresh', { handoffsAskedAt: 1234 })
+  await clock.advance(15_000)
+  const afterAsk = reads
+  expect(afterAsk).toBeGreaterThan(afterStart)
+
+  // The same request is answered once.
+  await clock.advance(3 * 60_000)
+  expect(reads).toBe(afterAsk)
+})
+
+test('a handoff keeps who it is assigned to and its in-progress label', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [])
+  stubGit(on, argv => argv.includes('acme/app-repo')
+    ? { exitCode: 0, stdout: JSON.stringify([
+      { number: 4, title: 'Doing it', url: 'u4', createdAt: 'x', labels: [{ name: 'bug' }, { name: 'In Progress' }], assignees: [{ login: 'amn' }] },
+      { number: 5, title: 'Waiting', url: 'u5', createdAt: 'x', labels: [{ name: 'progress-report' }], assignees: [] },
+    ]) }
+    : { exitCode: 0, stdout: '[]' })
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  const [doing, waiting] = db.read('config', 'handoffs')?.byFolder?.app ?? []
+  expect(doing?.progressLabel).toBe('In Progress')
+  expect(doing?.assignees).toEqual(['amn'])
+  expect(db.read('config', 'handoffs')?.marks?.app).toBe('gh label create "in progress" --force --repo acme/app-repo && gh issue edit <n> --repo acme/app-repo --add-label "in progress"')
+  expect(doing?.labels).toEqual(['bug'])
+  expect(waiting?.progressLabel).toBe('')
+  expect(waiting?.assignees).toEqual([])
+  expect(waiting?.labels).toEqual(['progress-report'])
+  await clock.advance(60_000)
+})
+
+test('a keeper that stopped beating is replaced, and one still beating is never doubled', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const toolCalls: any[] = []
+  let isBeating = true
+  stubEngine(on, [])
+  stubGit(on)
+  stubKeeperTools(on, toolCalls, () => isBeating)
+  const db = fakeOfficeDatabase(on)
+  db.seed('config', 'departments', { ...STATION, keepAwake: true })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+  const starts = () => toolCalls.filter(c => c.tool === 'Bash')
+  expect(starts().length).toBe(1)
+  // The whole loop is in the command: nothing it runs can be rewritten after approval.
+  expect(String(starts()[0].command)).toContain('while :; do date +%s > "C:/Users/me/.claude/agent-station-logs/keeper-local_coord.beat"; sleep 60; done')
+  expect(String(starts()[0].command)).not.toContain('.sh')
+
+  await clock.advance(10 * 60_000)
+  expect(starts().length).toBe(1)
+
+  // No beat any more: the old one is stopped first (it may be frozen, not
+  // gone), then another starts, and beats.
+  isBeating = false
+  await clock.advance(60_000)
+  expect(starts().length).toBe(2)
+  const order = toolCalls.map(c => c.tool === 'TaskStop' ? `stop ${c.task_id}` : c.tool === 'Bash' ? 'start' : '').filter(Boolean)
+  expect(order).toEqual(['start', 'stop bg1', 'start'])
+  isBeating = true
+  await clock.advance(10 * 60_000)
+  expect(starts().length).toBe(2)
+})
+
+test('a coordination session not in bypass mode says once that the station works fully only there', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  mock.env(on, { COMPUTERNAME: 'TESTPC', USERPROFILE: 'C:/Users/me' })
+  on('session.cwd' as any, () => ({ value: 'C:/work/coord' }))
+  on('session.id' as any, () => ({ value: 'engine-id' }))
+  on('tool.call', { tool: 'Read' }, () => ({ result: { text: 'ok' } }) as any)
+  on('mcp.call' as any, (_$: any, e: any) => ({ value: { content: [{ type: 'text', text: e.tool === 'get_session' ? JSON.stringify({ sessionId: 'local_coord', title: 'Coordination', permissionMode: 'auto' }) : '' }] } }))
+  const toasts: string[] = []
+  on('ui.toast' as any, (_$: any, e: any) => { toasts.push(String(e?.text ?? e)); return { value: null } })
+  stubGit(on)
+  fakeOfficeDatabase(on)
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+  await $.tool.call({ tool: 'Read', file_path: 'C:/y.md' } as any)
+  await clock.advance(5_000)
+  expect(toasts.filter(t => t.includes('runs in the auto permission mode')).length).toBe(1)
+  await clock.advance(60_000)
+})
+
+test('KEEP AWAKE refused by auto mode is told once, with what to do, and shown in the status line', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const statuses: any[] = []
+  stubEngine(on, [], [], statuses)
+  stubGit(on)
+  const toasts: string[] = []
+  on('ui.toast' as any, (_$: any, e: any) => { toasts.push(String(e?.text ?? e)); return { value: null } })
+  on('fs.write' as any, () => ({ value: null }))
+  on('fs.read' as any, () => ({ value: '' }))
+  on('tool.call', { tool: 'Bash' }, () => ({ deny: 'The server-side auto mode classifier gave no verdict for Bash' }) as any)
+  const db = fakeOfficeDatabase(on)
+  db.seed('config', 'departments', { ...STATION, keepAwake: true })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(25 * 60_000)
+  expect(toasts.filter(t => t.includes('KEEP AWAKE cannot start its command, because auto mode refuses it. Run this coordination session with permissions bypassed')).length).toBe(1)
+  expect(statuses.some(s => String(s?.text ?? s).includes('KEEP AWAKE does not start (auto mode refuses its command)'))).toBe(true)
+})
+
+test('an order that could not be delivered is told in the coordination session', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [])
+  stubGit(on)
+  const toasts: string[] = []
+  on('ui.toast' as any, (_$: any, e: any) => { toasts.push(String(e?.text ?? e)); return { value: null } })
+  const db = fakeOfficeDatabase(on)
+  db.seed('orders', 'nf', { text: 'Check it', folder: 'app', mode: 'existing', status: 'pending', createdAt: Date.now() })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+  expect(db.read('orders', 'nf')?.status).toBe('failed')
+  expect(toasts.filter(t => t.startsWith('Agent station: the order for app was not delivered:')).length).toBe(1)
+  await clock.advance(60_000)
+})
+
+// A repo cloned next to the coordination repo, and added to the station, after
+// the dispatcher started: an order for its room looks for it again first.
+test('an order for a room cloned after the dispatcher started is not failed for it', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls)
+  const remotes: Record<string, string> = { ...REMOTES }
+  stubGit(on, undefined, remotes)
+  const folders = ['app', 'coord', 'legal']
+  on('fs.list' as any, (_$: any, e: any) => {
+    const path = String(e.path ?? e).replace(/\\/g, '/')
+    if (path === 'C:/work') return { value: folders.map(name => ({ name, kind: 'dir' })) }
+    throw new Error('no such directory')
+  })
+  const db = fakeOfficeDatabase(on)
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+
+  // The repo is cloned and added to the station; an order for its room comes.
+  folders.push('newroom')
+  remotes['C:/work/newroom'] = 'https://github.com/acme/newroom.git'
+  db.seed('config', 'departments', { ...STATION, repos: [...STATION.repos, { remote: 'github.com/acme/newroom' }] })
+  db.seed('orders', 'c1', { text: 'Set up the new repo', folder: 'newroom', mode: 'new', status: 'pending', createdAt: Date.now() })
+  db.seed('orders', 'c2', { text: 'Nothing here', folder: 'ghost', mode: 'new', status: 'pending', createdAt: Date.now() })
+  await clock.advance(35_000)
+
+  expect(db.read('orders', 'c1')?.status).toBe('needs_click')
+  expect(db.read('orders', 'c2')?.status).toBe('failed')
+  expect(String(db.read('orders', 'c2')?.note)).toContain('ghost')
+  await clock.advance(60_000)
+})
+
+// The repos are looked for again only on request: the page's FIND REPOS (or
+// the coordination's find_repos tool), never with the handoffs' UPDATE.
+test('the repos are looked for again on the page\'s request, not with the handoffs\' update', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls)
+  const remotes: Record<string, string> = { ...REMOTES }
+  stubGit(on, () => ({ exitCode: 0, stdout: '[]' }), remotes)
+  const folders = ['app', 'coord', 'legal']
+  on('fs.list' as any, (_$: any, e: any) => {
+    const path = String(e.path ?? e).replace(/\\/g, '/')
+    if (path === 'C:/work') return { value: folders.map(name => ({ name, kind: 'dir' })) }
+    throw new Error('no such directory')
+  })
+  const db = fakeOfficeDatabase(on)
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(15_000)
+  expect(db.read('dispatchers', 'TESTPC')?.rooms).toEqual(['app', 'legal'])
+
+  folders.push('newroom')
+  remotes['C:/work/newroom'] = 'https://github.com/acme/newroom.git'
+  db.seed('config', 'departments', { ...STATION, repos: [...STATION.repos, { remote: 'github.com/acme/newroom' }] })
+  db.seed('config', 'refresh', { handoffsAskedAt: 5 })
+  await clock.advance(25_000)
+  expect(db.read('dispatchers', 'TESTPC')?.rooms).toEqual(['app', 'legal'])
+
+  db.seed('config', 'refresh', { reposAskedAt: 9 })
+  await clock.advance(25_000)
+  expect(db.read('dispatchers', 'TESTPC')?.rooms).toEqual(['app', 'legal', 'newroom'])
+  await clock.advance(60_000)
+})
+
+test('the coordination session gets find_repos, which says what it found and what is missing', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls)
+  stubGit(on)
+  stubFolders(on)
+  const registered: string[] = []
+  on('tool.register' as any, (_$: any, e: any) => {
+    registered.push(e.name)
+    return { value: { tool: `mcp__agent-station__${e.name}` } }
+  })
+  fakeOfficeDatabase(on)
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+
+  expect(registered).toContain('find_repos')
+  const reply: any = await $.tool.call({ tool: 'mcp__agent-station__find_repos' } as any)
+  const text = JSON.stringify(reply)
+  expect(text).toContain('Rooms found: app (')
+  expect(text).toContain('legal (')
+  expect(text).not.toContain('coord (')
   await clock.advance(60_000)
 })

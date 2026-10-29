@@ -6,7 +6,9 @@
 // Add ?lang=es to the address to see the station in Spanish.
 (() => {
   const now = Date.now();
-  const session = (id, folder, state, model, extra) => ({ id, data: () => ({ folder, title: id, state, model, lastEventAt: now - 20000, startedAt: now - 3600000, machine: "LAPTOP", modVersion: "1.2.24", drones: [], ...extra }) });
+  // What the page changed in a session (disconnecting it) stays on top of its made-up fields.
+  const sessionPatches = {};
+  const session = (id, folder, state, model, extra) => ({ id, data: () => ({ folder, title: id, state, model, lastEventAt: now - 20000, startedAt: now - 3600000, machine: "LAPTOP", modVersion: "1.2.80", drones: [], ...extra, ...sessionPatches[id] }) });
   const sessions = [
     session("web-1", "web", "working", "claude-opus-5-5", { title: "Pricing page redesign", tool: "Edit", detail: "pricing.astro" }),
     session("web-2", "web", "waiting", "claude-sonnet-5-5", { title: "Blog images", waitKind: "permission", tool: "Bash", detail: "npm" }),
@@ -34,8 +36,9 @@
   const snapDoc = d => ({ exists: !!d, data: () => d, metadata: { fromCache: false } });
   const language = new URLSearchParams(location.search).get("lang") === "es" ? "es" : "en";
   let departments = null;
-  const configListeners = [], orderListeners = [];
+  const configListeners = [], orderListeners = [], sessionListeners = [];
   const notifyOrders = () => orderListeners.forEach(cb => cb(snapCol([...orders])));
+  const notifySessions = () => sessionListeners.forEach(cb => cb(snapCol([...sessions])));
   // What the coordination session does with an order: hand it to an open
   // session of its room, or leave a card for a new one.
   const deliverLater = o => setTimeout(() => {
@@ -57,6 +60,7 @@
       onSnapshot: cb => {
       setTimeout(() => {
         if (name === "orders") orderListeners.push(cb);
+        if (name === "sessions") sessionListeners.push(cb);
         cb(snapCol(name === "sessions" ? sessions : name === "orders" ? orders : name === "dispatchers" ? dispatchers : []));
       }, 0);
       return () => {};
@@ -69,6 +73,8 @@
         cb(snapDoc(departments));
       })(); return () => {}; },
       update: async patch => {
+        const s = sessions.find(x => `sessions/${x.id}` === path);
+        if (s) { sessionPatches[s.id] = { ...sessionPatches[s.id], ...patch }; return notifySessions(); }
         const o = orders.find(x => `orders/${x.id}` === path);
         if (!o) return;
         const wasPending = o.record.status === "pending";

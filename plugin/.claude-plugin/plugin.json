@@ -1,6 +1,6 @@
 {
   "name": "agent-station",
-  "version": "1.2.24",
+  "version": "1.2.80",
   "description": "Gives every Claude Code session a map of the station's agents and lets them propose work to each other, with the user's approval, while each session shows on the station page",
   "author": {
     "name": "Amn"
@@ -8,6 +8,7 @@
   "homepage": "https://dlportel.github.io/agent-station/demo/",
   "repository": "https://github.com/dlportel/agent-station",
   "license": "MIT",
+  "types": "./types/index.d.ts",
   "keywords": [
     "multi-agent",
     "orchestration",

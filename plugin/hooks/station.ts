@@ -43,11 +43,22 @@ export function stationUrls(options: Record<string, unknown>): string[] {
 // that answers without a usable config/departments gives an empty one, and so
 // does one that does not exist or that this account cannot read: asking it
 // again would never change the answer.
-export async function readStationConfig(io: EngineIo, officeUrl: string): Promise<Station | undefined> {
+export async function readStationConfig(io: EngineIo, officeUrl: string, onError?: (error: string) => void): Promise<Station | undefined> {
   const reply = await callOffice(io, officeUrl, { action: 'get', collection: 'config', doc_id: 'departments' })
   const isUnreachableForGood = !reply.isOk && /no such artifact|no access|not found|forbidden/i.test(reply.text)
-  if (!reply.isOk && !isUnreachableForGood) return undefined
-  return stationFromConfig((reply.isOk ? parseDocs(reply.text)[0]?.data : undefined) ?? {}, officeUrl)
+  if (!reply.isOk && !isUnreachableForGood) {
+    onError?.(reply.text)
+    return undefined
+  }
+  const config = reply.isOk ? parseDocs(reply.text)[0]?.data : undefined
+  // A reply that is neither the document nor a plain "there is none" is no
+  // answer: taking it for an empty station would leave the session out of it
+  // for good, with nothing said.
+  if (reply.isOk && !config && !/no (such )?documents?|0 documents|not found|does not exist/i.test(reply.text)) {
+    onError?.(reply.text)
+    return undefined
+  }
+  return stationFromConfig(config ?? {}, officeUrl)
 }
 
 // A station as the plugin uses it, from its config/departments document.
@@ -133,6 +144,7 @@ export function stationMap(station: Station, ownFolder: string, proposeTool: str
   )
   lines.push('', say("A new session that an order opens may work in a git worktree of its repo (a folder under `.claude/worktrees`), on a branch of its own: the order's message says from which branch to start."))
   lines.push(...handoffLines(station, proposeTool))
+  lines.push(...ownHandoffLines(station, ownFolder))
   if (station.coordination) lines.push('', say('The coordination session (`{coordination}`) runs the station and delivers the approved orders, but it is no go-between for the rooms: never write to it to ask for work, return a result or forward anything; that is what `{tool}` is for.', { coordination: station.coordination, tool: proposeTool }))
   return lines.join('\n')
 }
@@ -165,6 +177,34 @@ function handoffLines(station: Station, proposeTool: string): string[] {
     say('If the command fails because `gh` or `glab` is not installed or has no login, do not look for another way, and never write a token in a command, file, log or message: tell the user what is missing, and meanwhile ask for the work with `{tool}`, with all its context.', { tool: proposeTool }),
   )
   return lines
+}
+
+// What "handoffs" means for this session's own room, so that "the pending
+// handoffs" is read as the open issues of its repo: how to list them, when one
+// is in progress, and how to mark one it starts without a station order. None
+// for a room whose repo is on a host without issues, or whose issues the
+// station does not show.
+function ownHandoffLines(station: Station, ownFolder: string): string[] {
+  const say = (text: string, vars?: Record<string, unknown>) => tx(station.language, text, vars)
+  if (!ownFolder || ownFolder === station.coordination) return []
+  let rule: RepoRule | undefined, remote = ''
+  for (const candidate of station.repos) {
+    const normalized = normalizeRemote(candidate.remote)
+    if (normalized.endsWith('/*')) {
+      if (!rule) { rule = candidate; remote = `${normalized.slice(0, -2)}/${ownFolder}` }
+    } else if ((candidate.folder || normalized.split('/').pop()) === ownFolder) {
+      rule = candidate; remote = normalized
+      break
+    }
+  }
+  if (!rule || rule.issues === false) return []
+  const repo = issueRepoOf(remote)
+  if (!repo?.kind) return []
+  return [
+    '',
+    say('Your room\'s handoffs are the open issues of its repo, `{repo}`: when the user speaks of handoffs, pending handoffs or the station\'s tasks, those issues are what they mean. To see them: `{list}`.', { repo: remote, list: issueCommand(repo.kind, repo.host, repo.path, 'list') }),
+    say('A handoff is in progress when it has the label `in progress` or someone assigned to it; the others are waiting. Before you start one that no station order gave you, mark it in progress (`<n>` is its number): `{mark}`.', { mark: issueCommand(repo.kind, repo.host, repo.path, 'progress') }),
+  ]
 }
 
 // What the coordination session reads beside a message from another session:
@@ -253,6 +293,10 @@ export function issueRepoOf(remote: string): { host: string; path: string; kind?
   const slash = normalized.indexOf('/')
   const host = normalized.slice(0, slash), path = normalized.slice(slash + 1)
   if (slash < 1 || !path.includes('/') || path.includes('*')) return undefined
+  // The host and path go into commands the agents run: only the characters of
+  // a plain remote (and the map's <folder> for a group's repos), so nothing in
+  // a remote can add to those commands.
+  if (!/^[a-z0-9.-]+(:\d+)?$/i.test(host) || !/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*\/([A-Za-z0-9._-]+|<folder>)$/.test(path)) return undefined
   const kind = host === 'github.com' ? 'github' : /(^|[.-])gitlab([.-]|$)/.test(host) ? 'gitlab' : undefined
   return { host, path, kind }
 }
@@ -260,12 +304,25 @@ export function issueRepoOf(remote: string): { host: string; path: string; kind?
 // The command that opens or reads a handoff issue in a repo, for the map and
 // the page. glab takes the repo as a full URL, which also works for a GitLab
 // of its own.
-export function issueCommand(kind: IssueKind, host: string, path: string, verb: 'create' | 'view' | 'list'): string {
+// progress marks an issue as being worked on with the label "in progress",
+// which the station reads: on GitHub the label is created first (--force
+// leaves one that exists as it is), GitLab creates it when it is added.
+export function issueCommand(kind: IssueKind, host: string, path: string, verb: 'create' | 'view' | 'list' | 'progress'): string {
   if (kind === 'github') {
-    return { create: `gh issue create --repo ${path} --title "…" --body "…"`, view: `gh issue view <n> --repo ${path}`, list: `gh issue list --repo ${path}` }[verb]
+    return {
+      create: `gh issue create --repo ${path} --title "…" --body "…"`,
+      view: `gh issue view <n> --repo ${path}`,
+      list: `gh issue list --repo ${path}`,
+      progress: `gh label create "in progress" --force --repo ${path} && gh issue edit <n> --repo ${path} --add-label "in progress"`,
+    }[verb]
   }
   const repo = `https://${host}/${path}`
-  return { create: `glab issue create -R ${repo} --title "…" --description "…"`, view: `glab issue view <n> -R ${repo}`, list: `glab issue list -R ${repo}` }[verb]
+  return {
+    create: `glab issue create -R ${repo} --title "…" --description "…"`,
+    view: `glab issue view <n> -R ${repo}`,
+    list: `glab issue list -R ${repo}`,
+    progress: `glab issue update <n> -R ${repo} --label "in progress"`,
+  }[verb]
 }
 
 // A branch an order may start from: parts of letters, digits and . _ - joined

@@ -17,29 +17,93 @@ six subagents keeps them in a drone cabinet, one lit slot each (empty while the 
 opens the full list with a shortcut to give each one an order.
 
 Orders and handoffs each have a full list, opened from the bridge (SEE ALL under RECENT ORDERS, SEE
-THEM ALL in OPEN HANDOFFS, and the `+N` on a room's board). It shows every item the page holds,
+THEM ALL in OPEN HANDOFFS, and a room's board, which opens it filtered by that room). It shows every item the page holds,
 newest first, fifteen to a page with the range and the page number, a filter (an order's state, a
 handoff's room) and a text search that ignores case and accents and needs every word typed: over an
 order's text, reason, note, room, agent, branch, state, the session it reached and the one that
-proposed it, and over a handoff's number, title, description, room and who asked. The list is
+proposed it, and over a handoff's number, title, description, room, who asked and labels. The list is
 built from the data the page already has, so it needs no extra reads. On the bridge, OPEN HANDOFFS
 shows the five newest of each room and a link to the rest.
 
+A handoff is IN PROGRESS when any of these holds, and OPEN otherwise: an order of the station made
+from it (`handoff.number` on the order) is pending, waiting for its click, being picked up or
+delivered; its issue has a label that names the work as under way (`in progress`, `doing`, `wip`,
+`working`, `en curso`, `en progreso`, with or without a `status:` prefix), which the dispatcher keeps
+as `progressLabel`; or its issue is assigned to someone (`assignees`, up to three). GitHub and
+GitLab issues have no such state of their own, so these are the signs the station reads. The chip
+on each row and the handoff's detail say which signs it has, each room's heading and its board
+count the ones in progress, and the full list filters by state.
+
+A handoff also shows its issue's own labels (`labels`, up to eight), such as the area or the
+component it is about, so the handoffs of one repo can be told apart: every label but `handoff`,
+the `from-*` one and the in-progress one, which the station already reads. They show next to the
+state on each row and in the detail, and the text search finds them.
+
+The dispatcher reads the open issues every fifteen minutes. ↻ UPDATE, in OPEN HANDOFFS and in the
+full list of handoffs, writes the time to `config/refresh` (`handoffsAskedAt`); the dispatcher
+checks that document every ten seconds and, when the time changed, reads the issues at once, so
+the new list arrives a few seconds after the click. The button
+shows UPDATING… until the new list arrives (or for three minutes at most), its tooltip says when
+the list was last read, and with no dispatcher running it says that the list will be read when the
+coordination session wakes up.
+
 On a desktop screen (1100 px wide or more) the rooms sit on a grid so that the whole station fits
 the window without scrolling. The columns are equal, as many as the screen is wide for, each the
-narrowest a room is worth at the robots' scale. A room takes one cell, or as many side by side as
-its robots and furniture need, and is as tall as its contents; the rooms of a line share their
+narrowest a room is worth at the robots' scale. A room takes as many cells side by side as its
+robots and furniture need, times its width (`weight`: 1 narrow, 1.2 normal, 1.4 wide), and a very
+wide room (1.6 or more) takes a whole line of its deck, alone; it is as tall as its contents; the rooms of a line share their
 height and nothing is stretched to fill the window. The lines fill up in order, a deck that does
 not fit at the end of a line going on in the next under its label again. The robots get the
-largest scale (4, 3, then 2) at which the station, drawn and measured, fits the window's height.
-When none does, the station flows deck under deck and the page scrolls, as on a phone. On the grid
+largest scale (3, 2.5, then 2) at which the station, drawn and measured, fits the window's height.
+Larger robots are worth slightly smaller texts: a scale at 90% is tried before the next scale at
+full size (3, 3 at 90%, 2.5, 2.5 at 90%), and the plan in use is kept while it fits, so opening a
+session moves nothing. The header's buttons are compact, so on a laptop they share the title's line
+and leave the station that height.
+Every try draws the whole station and measures it, so the search keeps the tries few: the zooms
+are halved for the smallest scale and only that zoom is tried for the larger ones, and a bridge that
+has to give way goes straight to the size the station asks for. The fit found is kept in the
+viewer's browser for that window size, theme and decks, so a reload draws the station once.
+The page draws the station once its data and its themes are in (or after 2.5 s), so it never shows
+first in another theme; the template (`seed.json`) loads beside the rest, since only CONFIGURE needs
+it.
+A fitted station then reaches down to the window's foot, its decks on top as they are and the
+ground of its theme at the bottom.
+When none does, the station is drawn smaller as a whole, texts, signs and boards too, with a zoom of
+its own (90% down to 50%), so a short screen, such as a 16-inch laptop with the system scaled, shows
+it all while the bridge keeps its size; the zoom that fitted last is kept while the window keeps its
+size. Robots, capsules and tubes are placed in the station's own units, so they stay where they are
+drawn at any zoom. So that the two never look too far apart, the bridge gives way too when the
+station has to shrink a lot: it goes down to 90, 85 or 80%, its column narrowing with it, until the
+station's drawn size (its scale out of 3, times its zoom) is at least 60% of the bridge's. When not even 50% fits, the station flows deck under deck and the page scrolls,
+as on a phone. On the grid
 the legend sits at the foot of the bridge, which scrolls on its own; the bridge can be folded away
-(BRIDGE), which the browser remembers. The rooms are drawn in the order of the station's repo
-list, moved up and down with ▲ and ▼ in CONFIGURE: within a deck its rooms follow that order (the
-canteen and the hangar keep their place), and the decks follow their first room. They reach the
+(BRIDGE), which the browser remembers. The decks are drawn in the layout's order and the rooms
+of a deck in the order of the station's repo list (the canteen and the hangar keep their place),
+both moved up and down with ▲ and ▼ in CONFIGURE. Off the grid a room's width sets how much it
+grows in its row, and a very wide room takes the row alone. They reach the
 grid through one ordered list (`arrangedDecks`). The
 plugin writes at most one report every 20 seconds, so the pose shows the latest tool at that
 moment, not every tool call.
+
+The header shows the page's version beside the station's title, amber when the open sessions'
+plugin is newer than the page, which means the page was not republished. The clock closes the
+buttons' row, with the shift beside the hour (the hour alone on a narrow window) and a lamp that
+lights up with each signal from the station and dims after five minutes without one; its tooltip
+says when the last one came. Below the header there is a line only while the page connects or to
+say what went wrong. The bridge's dispatch
+console has a lamp for the dispatcher (green while it waits for orders, amber while there are
+capsules to deliver, red when no dispatcher runs), the number of capsules waiting and the queue
+itself; its robot works at its desk while the dispatcher runs, watching its screen while it waits for
+orders and typing while there are capsules to deliver. Beside it a small support robot hovers while
+orders are awaited, carries each capsule from the queue to the coordinator while it delivers, and
+lands switched off when no dispatcher runs.
+
+SOUND (off by default, kept in the browser) sounds only what really happens: a robot waiting for
+your OK, a robot starting to work, a new robot, a new order, a new handoff, an order delivered and
+work finished. However many handoffs one update of the catalog brings, they sound once: one sound
+for a single new handoff, another for several, and the coordinator's support robot hops for twelve seconds (or until it is clicked) under a sign
+saying how many came. A robot's start of work sounds once every two minutes at most. The robots' walks and lift rides are silent, and so is the first read of each list
+when the page opens.
 
 ## The configuration
 
@@ -53,16 +117,26 @@ moment, not every tool call.
 | `theme` | The station's scenery. `space` (stars and planets, from `themes/space.js`) is the default, used when the field is missing or names a theme that is not loaded. A station adds its own themes in a `theme.js` published next to the page (see *Themes* in the README). A theme changes only the scenery, never the robots, the rooms or what the page does. |
 | `coordination` | The department whose sessions act as coordination: they run the dispatcher and may write orders and this document. |
 | `keepAwake` | `true` keeps the dispatcher's session awake with a background command (see *Keeping the dispatcher awake*). Off when missing. |
-| `departments` | Each room: `name`, `place`, `accent`, `wall`, `floor`, `furniture`, `accessory`, `weight` (width), fallback `agents`. |
+| `departments` | Each room: `name`, `place`, `accent`, `wall`, `floor`, `furniture`, `accessory`, `weight` (width: 1 narrow, 1.2 normal, 1.4 wide, 1.6 a line of its own), fallback `agents`. |
 | `layout` | Rows of rooms: `{ "label": "ROW", "items": ["dept", "#canteen", "#hangar"] }`. Departments not placed in a row are shown after them. Every station also has two shared rooms: `#canteen`, where robots idle for a while go to rest (and to sleep in the small hours), and `#hangar`, where they go to recharge on its pads. A row can place them; one placed in no row is shown after the rows. |
+| `departments["#canteen"]`, `departments["#hangar"]` | The shared rooms' own look, set from SHARED ROOMS in DECKS, where each has a row with its deck (or not on the station) and SETTINGS, which opens its panel beside the configuration as a repo's room has it: `name`, `place` (the line under the name), `accent`, `wall` and `floor`. A field left out keeps the theme's. |
 | `offStation` | The shared rooms taken off the station (`["#canteen"]`, `["#hangar"]` or both), chosen in CONFIGURE as "(not on the station)". A station without them simply has no such visits. |
-| `senders` | Which department each `from-*` handoff label stands for, to colour its notes. |
+| `senders` | Which department each `from-*` handoff label stands for. |
 | `aliases` | Other URLs the same artifact answers at (`https://claude.ai/code/artifact/<uuid>`). Not part of a template: each station writes its own. |
 
-The page's **CONFIGURE** button edits the title, the theme, the language, the coordination repo, KEEP AWAKE and the repos, one
-row per repo (its remote and its room's deck). Its **DECKS** section edits the layout:
+The page's **CONFIGURE** button opens the configuration in four tabs, with SAVE below them: GENERAL
+(the title, the theme, the language, the coordination repo and KEEP AWAKE), REPOS (the repos and
+their rooms), DECKS and VIEW. VIEW is not part of the station's configuration: it is how this
+browser draws the page, kept in its `localStorage` (`office-look`) and shown at once, with no SAVE,
+so each screen has its own. It sets the station's size (automatic, the largest that fits, or a
+fixed 50 to 150% of the robots' full size, the page scrolling when it does not fit), the bridge's
+size (automatic or a fixed 70 to 130%), the dialogs' size (80 to 150%: an order, a robot's card, the
+lists, the configuration), all with their texts, the light (by the clock, or always
+day) and whether the legend, the bridge's station map and its recent orders show. It edits the title, the theme, the language, the coordination repo, KEEP AWAKE and the repos, one
+row per repo (its remote, its room's visible name, which SETTINGS edits too, and its room's deck). Its **DECKS** section edits the layout:
 it renames, adds and removes decks, and places the shared rooms on a deck or off the station; each
-repo row chooses its room's deck. A deck left with no rooms is not saved, and a room on no deck is
+repo row chooses its room's deck. A named deck with no rooms yet is saved, and drawn once a room is
+on it (a row with neither a name nor rooms is dropped), and a room on no deck is
 shown after the decks, under OTHERS. Each row's **SETTINGS** button opens its room in a
 panel beside it, with a live preview: the room's visible name, its folder (the identifier the
 agents use, the repo's name unless set), what its agent does, the place, the accessory its robots wear, the accent colour,
@@ -79,6 +153,12 @@ own room. Closing with unsaved changes takes a second press. The coordination is
 instead of a deck and a style, since it has no room. When no dispatcher is running, the bridge
 says to open a session in the coordination repo and send it a message, or, with no coordination
 chosen, to choose one in CONFIGURE.
+
+A room on a deck whose repo is not in the repo list is drawn by the page, but the sessions' map and
+`propose_order` go by the repo list alone, so nobody can ask it for work. Saving in CONFIGURE takes
+such rooms off the decks, so only a configuration written elsewhere leaves one; the bridge and
+CONFIGURE, REPOS then name them in amber, with what to do. A room's folder is, everywhere, its
+row's `folder`, or the last part of its remote when the row has none.
 
 The panel needs no Claude session and no plugin, and the page reads a malformed config without
 breaking, so it is also the way to repair a broken configuration. When the page is published with
@@ -101,6 +181,12 @@ go-between: nobody writes to it to ask for work, return a result or forward anyt
 for the room that takes it to decide. `propose_order` still takes an `agent`, for when the user
 asks for a particular one. A room's own subagents need no map: Claude Code loads the repo's
 `.claude/agents` itself.
+
+It also tells the session what handoffs are for its own room: the open issues of its repo, so that
+"review the pending handoffs" means those issues, with the command that lists them on the repo's
+host; that one with the label `in progress` or someone assigned is in progress; and the command
+that marks one in progress before the agent starts it without a station order. A room whose repo is
+on a host without issues, or whose issues the station does not show (ISSUES: NO), gets none of it.
 
 The map goes out again whenever the session loads its plugins anew (`/reload-plugins`, an update,
 a restart of the app). A room without a description shows in the map as not described, and
@@ -133,16 +219,25 @@ its repo, read with git when the session starts. While an earlier station in the
 answered, the session waits for it instead of landing on a later one. A station that does not
 answer is asked again at once, then after 1, 5 and 15 minutes; one that does not exist, or that
 this account cannot read, counts as answered with no repos. A session in no station's repos, or
-in a folder git says is no repo or has no `origin`, is ignored for its whole life: the plugin
-never writes anywhere but that one station. When git fails instead (it cannot run, times out or
+in a folder git says is no repo or has no `origin`, is ignored while it stays in that folder: the
+plugin never writes anywhere but that one station. The desktop app starts some new sessions in a
+spare folder of its own (`~/.claude-spares/…`) and moves them to their project a moment later:
+nothing is decided in a spare folder, and a session that moves to another folder works its station
+out again there, on its next event. When git fails instead (it cannot run, times out or
 ends with any other error), the remote is read again a minute later, and every minute after.
 
 A session that cannot tell yet whether it belongs to a station, because git failed or a station
 earlier in the list does not answer, tries again by itself every minute, without waiting for the
 agent's next step. If its retry a minute later fails too, it says so once in a notice: the
-reason, that it keeps trying, and that `/reload-plugins` starts it over. While the only problem is
-a station that does not answer, the notice comes only when the repo is in a later station that
-did answer, so a session in an unrelated repo says nothing.
+reason, that it keeps trying, and that `/reload-plugins` starts it over. A station that does not
+answer is named in the notice with its error (in auto mode, the classifier's refusal), since the
+repo may belong to it. A reply that is neither the station's configuration nor a plain "there is
+none" counts as no answer, never as an empty station.
+
+Every attempt to join is logged when its outcome changes, under the app's id for the session from
+the start (`~/.claude/agent-station-logs/<session>.log`, `action=join`): the folder it read, the remote git gave, each
+station's answer in the order of `stations` (lists this repo, answered, or did not answer and why)
+and where the session landed or what it waits for.
 
 **Known case: an earlier station that does not answer holds back the later ones.** With two
 stations in `stations`, a session whose repo is only in the second one does not join it while the
@@ -173,6 +268,22 @@ on its station, and every call of the agent gets the verdict of the session's ru
 usual. It approves them in the engine's `tool.check` event, with `classic.PreToolUse` as a
 fallback for apps that do not raise it. Approving them in `PreToolUse` alone is not enough: in auto
 mode the call still goes to the classifier, and a classifier that gives no verdict denies it.
+
+Claude Code's built-in security plugin (Team and Enterprise accounts, managed settings) passes over
+`tool.check`, every `classic.*` event and `session.compact` for plugins the user installed. The
+plugin learns it from its first agent call that goes through with no `classic.PreToolUse`; until a
+`classic.PreToolUse` arrives it acts as if they were passed over, so no confirmation is lost:
+
+- the confirmations above are asked in `tool.call` with `$.ui.ask` (Allow / Deny); a dismissed
+  question denies the call;
+- a call that `$.tool.check` answers with `ask` marks the session as waiting for permission, only
+  in the `default`, `acceptEdits` and `plan` modes, where that verdict is the one the user sees;
+- a compaction is seen as fewer user prompts in the session (`$.session.turns()`) at the next
+  message, which then carries the map again; `session.compact` does the same where it runs;
+- the end of the session is taken from `session.end`, which is never passed over; a `/clear` does
+  not end it, it only sends the map again.
+
+The plugin's own approvals and KEEP AWAKE have no replacement: they need bypass permissions there.
 
 A station whose `aliases` were never recorded is guarded only by its main URL, so recording them
 (step 3 of the README's quick start) matters. The plugin only observes: every event is handed on unchanged, writes
@@ -217,6 +328,15 @@ of the dispatcher, and only while a coordination session is open there: a sessio
 machine without one stays on the station. The same pass deletes session documents closed more
 than 7 days ago; finished orders are deleted after 30 days, checked every five minutes.
 
+The app does not say whether a session's process is still running, so a session closed without
+reporting its end (the app quit, a crash, a computer switched off) stays on the station as
+standing by. Such a robot is taken off by hand: DISCONNECT on its card, or DISCONNECT INACTIVE in
+the session list, which takes every session with no activity for more than 24 hours. Disconnecting
+closes the session's document with the reason `disconnected`, so it leaves the station at once and
+gets no orders. A session that is still open comes back by itself: its next report writes its whole
+document again, with its own state and no reason, and one whose document was deleted meanwhile
+writes it anew.
+
 An order that is waiting for your click, failed or was delivered can be resent from its detail on
 the page, as it is or with another destination. It goes back to the queue with its attempt number
 raised and the trace of its last delivery cleared (a branch taken from the checkout is read again;
@@ -235,8 +355,11 @@ and fails when the session is gone. A reply goes back to whoever asked: when a s
 order for a department whose order it received, `propose_order` points the new order at the
 session that sent that one (or at the one the agent names in `session_id`), with mode `any`. The
 dispatcher then tries that session, then the department's idle sessions, then a new one; a session
-the app no longer has, or one that refuses the message, passes the order to the next. The page
-shows the session a proposal goes back to before you approve it.
+the app no longer has, or one that refuses the message, passes the order to the next. When the
+session that asked has already ended when the reply is proposed, the order goes to the department
+by its mode and keeps whom it answered (`replyGone`); the agent is told, so its text can explain
+itself to whoever gets it. The page shows the session a proposal goes back to, or that it answers
+one that no longer exists, before you approve it.
 
 The message a session receives says how to answer. An order another room proposed names that room
 and the session that asked, and says to return the result with `propose_order` to that room, which
@@ -255,7 +378,13 @@ saying so, and that code, SQL, email addresses and paths need the ordinary one.
 The dispatcher finds the station's repos on its machine next to the coordination repo: every
 sibling folder whose origin remote is in `repos`. It reads their `.claude/agents` into
 `config/agents` when it starts, their open issues (the newest hundred of each repo, whatever their labels) into `config/handoffs` every fifteen
-minutes, and it never opens a new session outside them. Each repo's issues are read with the tool
+minutes, and it never opens a new session outside them. It looks for the repos again, reading the
+station's `repos` again first, only before failing an order for a room it does not find and on
+request: the FIND REPOS button of CONFIGURE, REPOS (`config/refresh.reposAskedAt`), or the
+coordination session's `find_repos` tool, which the user can ask it to use. So a repo cloned or
+added to the station while the coordination session runs is found without restarting it. Each scan
+goes on the dispatcher's lease (`dispatchers/<machine>.rooms` and `roomsScannedAt`), and CONFIGURE,
+REPOS shows, per computer, the rooms found and the station's rooms with no clone there. Each repo's issues are read with the tool
 of the host in its remote: `gh` for github.com, `glab` for a host with "gitlab" in its name, and,
 for any other host, `glab` too when it has a login for that host (a GitLab of your own under
 another name). A repo on a host that is neither takes only orders. When a room's handoffs cannot
@@ -274,9 +403,10 @@ The map tells each session how to open a handoff in every room's repo, with the 
 repo's host (`gh issue create --repo …` or `glab issue create -R https://…`), names the rooms that
 take only orders, and says that when the tool is missing or has no login the agent tells the user
 and asks for the work with an order meanwhile, never writing a token anywhere. An open handoff,
-opened from its department's board or from the list on the bridge, has **ASSIGN TO AN AGENT**: it
-opens the order form for that department, filled in with the instruction to read the issue with
-its host's command, handle it and close it with the commit or the pull or merge request that
+opened from the list on the bridge or the full list, has **ASSIGN TO AN AGENT**: it
+opens the order form for that department, filled in with the instruction to mark the issue in
+progress first (the label `in progress`, with its host's command, which the dispatcher keeps in
+`config/handoffs` as `marks`), read the issue with its host's command, handle it and close it with the commit or the pull or merge request that
 resolves it; the user picks the agent, the session and the model, and the order keeps the issue it
 came from (`handoff`).
 `/coordinator <message>` sends a note to the station's coordination session on the same machine.
@@ -287,25 +417,54 @@ The dispatcher is a loop inside the process of the coordination session, and the
 process of a session that has been idle for a while. With it stops the dispatcher: approved orders
 wait until someone writes to the coordination session, which starts its process again. The app
 does not stop a session that has background work, so with `keepAwake` on (KEEP AWAKE in CONFIGURE)
-the session that holds the dispatcher lease keeps one:
+the session that holds the dispatcher lease keeps one. It works only when that session runs with
+permissions bypassed: every session reports its permission mode (`permissionMode`), and while KEEP
+AWAKE is on and the dispatching session is in another mode, the bridge and GENERAL in CONFIGURE say
+that KEEP AWAKE does not work on that machine and why.
 
-- **What runs.** A Bash command started by the plugin itself, in the background, that never ends:
-  `while :; do sleep 3600; done # agent-station-keep-awake`. It costs no tokens, and since it never
-  ends it never wakes the model. The plugin approves that exact command only while it is starting
+- **What runs.** A Bash command started by the plugin itself, in the background, that never ends
+  and writes the time to a file every minute, its beat
+  (`~/.claude/agent-station-logs/keeper-<session>.beat`). The whole loop is written in the command,
+  never in a script it runs, so what is approved is all that runs. In auto mode the classifier
+  refuses it, and no permission rule should let it through: KEEP AWAKE needs the coordination
+  session with permissions bypassed. It costs no tokens, and since it never
+  ends it never wakes the model.
+- **How the plugin knows it is alive.** By its beat, not by what the app lists: a beat older than
+  three minutes means the command ended (stopped by hand, or its session's process closed), and the
+  plugin stops it, in case it is only frozen or hung, before it starts another within a minute; a
+  beat that is fresh keeps it from starting a second one, also after a reload that lost the
+  command's id. After the computer was suspended (a gap of more than three minutes between the
+  plugin's own checks) the beat is not judged for ninety seconds, the time the keeper, frozen with
+  the computer, takes to beat again. The plugin approves that exact command only while it is starting
   it, and the stop only while it is stopping it; the same command from an agent gets the normal
   permission flow.
 - **When.** The dispatcher reads `keepAwake` every minute, so switching it takes effect without
-  restarting the session: on, the plugin starts the command; off, it stops it with `TaskStop`. At
-  the end of each turn the app lists the session's background work, and the plugin keeps one
-  command and stops any other (a reload of the plugin forgets the one it had started).
+  restarting the session: on, the plugin starts the command; off, it stops it with `TaskStop`. The
+  plugin keeps the command's task id in the session's state (`$.state`, `keeperTaskIds`), which
+  survives a reload of the plugin, so an update or `/reload-plugins` never starts a second one; the
+  state ends with the session's process, as the command does. At the end of each turn the app lists
+  the session's background work, and the plugin keeps one command and stops any other.
 - **What it costs.** The app may count the session as busy while the command runs, and then its
   setting to keep the computer awake while Claude works keeps the computer from going to sleep on
   its own while the coordination session is open. A computer that sleeps anyway, or a closed app,
   stops the dispatcher as before. A session that loses the dispatcher lease to another one stops
   its command.
-- **When it cannot start** (the Bash tool is missing or the call is refused), the plugin logs it in
-  `~/.claude/agent-station-logs/<session>.log`, tries again ten minutes later, and the station works
-  as it does without it.
+- **When it cannot start** (the Bash tool is missing or the call is refused), the coordination
+  session says so once in a notice, with what to do when auto mode refused it, and its status line
+  says so until the command runs. The plugin logs it in `~/.claude/agent-station-logs/<session>.log`,
+  tries again ten minutes later, and the station works as it does without it.
+
+The plugin tells the user of a problem in a notice once, with what to do, and in the status line
+while it lasts; the status line holds one thing, the station's connection first:
+
+| Problem | Where it is told |
+|---|---|
+| The session cannot reach the station | Notice when it is lost and when it is back; status line meanwhile |
+| KEEP AWAKE cannot start its command | Notice once; status line until it runs |
+| An order cannot be delivered | Notice in the coordination session, once per order; the order's note on the page |
+| A room's handoffs cannot be read, or their list cannot be saved | Notice in the coordination session; the room's board |
+| The session cannot join its station yet | Notice after a minute of trying |
+| The coordination session runs in another mode than bypass | Notice when it starts |
 
 Whether the setting is on or off, when no dispatcher holds a fresh lease (`LEASE_MS`, five
 minutes) for an approved order, the page says so: a **NO DISPATCHER** button in the header with
@@ -318,7 +477,10 @@ wakes it.
 Every order starts from a branch of its room's repo, its **base**:
 
 - **Which branch.** The one the order names, if any: an agent can give it with
-  `propose_order`'s `base`, and you can set or change it while editing a proposal on the page.
+  `propose_order`'s `base`, and you can set or change it while editing a proposal on the page, in
+  STARTING BRANCH (OPTIONAL). Left empty, its placeholder names the repo's current branch when a
+  session in the repo's own folder reports it, and it suggests the branches the room's sessions were
+  seen on (never the app's `claude/…` worktree branches).
   Otherwise, the branch the room's checkout is on, on the dispatcher's machine, at the moment the
   order is delivered. The person who asks rarely knows the branches of another room's repo, so
   the default is where that repo actually is.

@@ -104,7 +104,26 @@ follows:
   temporary JSON file and run `claude plugin configure <plugin id> --values-stdin < <file>`; then
   delete the file.
 
-## 7. Hand over
+## 7. Permissions
+
+The plugin approves its own calls (its writes to the station and the background command of KEEP
+AWAKE), but on an account of a Team or Enterprise organization, and on a machine with managed
+settings, Claude Code's built-in security plugin answers permission decisions first and the
+plugin's approval is skipped. Tell the user, in this order:
+
+- The coordination session works best with permissions bypassed (`bypassPermissions`): every
+  feature of the station works there, KEEP AWAKE included.
+- In auto mode most of the station works, but the plugin's own calls go to the auto-mode
+  classifier, which refuses calls no request asked for: KEEP AWAKE cannot start, and now and then
+  a report to the station is refused and sent again later. The rule `"ArtifactData"` in
+  `permissions.allow` of the user settings (`~/.claude/settings.json`) lets the reports through,
+  but it also lets any agent write to any artifact's database without asking (the plugin still
+  refuses agents' writes to a station), so the user decides. Add it only if the user confirms,
+  showing the exact line first; auto mode may refuse to let you edit the settings, and then the
+  user adds it. Never add a rule for KEEP AWAKE's command: it runs a loop, and a rule broad enough
+  to cover it would let other commands through.
+
+## 8. Hand over
 
 Open the station with the Artifact tool (`action: "open"`) and tell the user, in this order:
 

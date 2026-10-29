@@ -1,6 +1,6 @@
-import type { Register } from 'claude-code'
+import type { AskOptions, Register } from 'claude-code'
 import { artifactKey, callOffice, isOfficeCall, mcpText, officeCallKey, parseDocs, toolDetail, type EngineIo, type OfficeDoc } from './office'
-import { startDispatcherInBackground } from './dispatcher'
+import { findRepos, startDispatcherInBackground, type DispatcherContext } from './dispatcher'
 import { coordinationPeerNote, folderForRemote, isBranchName, joinPath, LANGS, readCurrentBranch, readOriginRemoteAnswer, readStationConfig, roomsLine, stationMap, stationRooms, stationUrls, isDirectSessionMessage, readOrderMark, type Lang, type Station } from './station'
 import { tx } from './locale-es'
 
@@ -32,7 +32,16 @@ const STATION_RETRY_MS = [0, 60_000, 5 * 60_000, 15 * 60_000]
 // A session that cannot join yet tries again this often by itself, and says so
 // once it has kept failing for this long.
 const JOIN_RETRY_MS = 60_000
+// The folders where the desktop app keeps sessions ready before it gives them
+// a project (~/.claude-spares/spare-…).
+const SPARE_FOLDER = /[\\/]\.claude-spares([\\/]|$)/
 const QUESTION_TOOLS = new Set(['AskUserQuestion'])
+// How the station says that a document is not there.
+const MISSING_DOC = /no (such )?documents?|0 documents|not found|does not exist/i
+// The permission modes where tool.check's verdict is what the user sees, and
+// how long the mod waits for it before a call goes on unmarked.
+const PERMISSION_CHECKED_MODES = new Set(['default', 'acceptEdits', 'plan'])
+const PERMISSION_CHECK_MS = 1_000
 const SUBAGENT_TOOLS = new Set(['Agent', 'Task'])
 // An agent looking up its own session is not work worth showing on the station.
 const DESKTOP_SESSION_TOOL = 'mcp__ccd_session_mgmt__get_session'
@@ -65,6 +74,15 @@ const PROPOSE_SPEC = {
   },
   isDeferred: false,
 }
+// Only the coordination session gets it: the dispatcher runs there, and the
+// user asks it to look again for the repos cloned on this machine.
+const FIND_REPOS_TOOL_NAME = 'find_repos'
+const FIND_REPOS_SPEC = {
+  name: FIND_REPOS_TOOL_NAME,
+  description: "Look again for this station's repos on this machine: the folders next to the coordination repo whose origin remote is one of the station's repos, reading the station's repo list again first. Use it when the user asks you to check the repos or folders of the station, for example after cloning a repo or adding one in CONFIGURE, so the dispatcher can deliver orders to its room without restarting. It answers which rooms it found, with their folders, and which rooms of the station have no clone here. No input.",
+  inputSchema: { type: 'object', properties: {} },
+  isDeferred: false,
+}
 const ORDER_MODES = new Set(['any', 'existing', 'new'])
 // The longest text and reason an order takes. An order is never cut: a longer
 // one is refused whole, with its length, so the agent shortens or splits it.
@@ -78,9 +96,21 @@ const TOAST_MS = 30_000
 // the dispatcher with it, but not one with background work. When the station's
 // config sets keepAwake, the session that dispatches keeps a command running in
 // the background that never ends, and stops it when keepAwake is switched off.
-// The mark tells it apart from the agent's own commands.
+// The mark tells it apart from the agent's own commands. The command writes
+// the time to a file of its own every minute (its beat), so the plugin knows
+// it is alive without asking the app: a beat older than KEEPER_STALE_MS means
+// it ended (stopped by hand, or its process closed) and another is started.
+//
+// The whole loop is written in the command itself, never in a script it runs,
+// so what is approved is all that runs: a script could be rewritten after its
+// call was approved. Its folder is made first, for a machine with no log yet.
 const KEEPER_MARK = 'agent-station-keep-awake'
-const KEEPER_COMMAND = `while :; do sleep 3600; done # ${KEEPER_MARK}`
+const KEEPER_BEAT_S = 60
+const KEEPER_STALE_MS = 3 * 60_000
+// After the computer wakes, the keeper (frozen with it) beats again within a
+// minute: its beat is not judged until this long after the plugin wakes.
+const KEEPER_WAKE_GRACE_MS = 90_000
+const keeperCommand = (beatPath: string) => `mkdir -p "${beatPath.replace(/\/[^/]*$/, '')}"; while :; do date +%s > "${beatPath}"; sleep ${KEEPER_BEAT_S}; done # ${KEEPER_MARK}`
 // A keeper that could not start is tried again after this long.
 const KEEPER_RETRY_MS = 10 * 60_000
 
@@ -100,17 +130,20 @@ export const register: Register = (on, options) => {
   let stationsLoad: Promise<StationsRead> | undefined
   let stationsRead: StationsRead | undefined
   let stationsRetryAt = 0
+  // Why each station that did not answer failed, by URL, for the join log and notice.
+  const stationErrors = new Map<string, string>()
   let stationsFailures = 0
   // The repo's remote, kept once git gave a clear answer; a failed read is
   // read again only by the session's own retry, once a minute.
   let remoteRead: Promise<{ remote?: string; isFinal: boolean }> | undefined
+  // The folder the last answer was worked out for: the app may start a new
+  // session in a spare folder of its own and move it to its project a moment
+  // later, so an answer holds only while the session stays where it was.
+  let membershipCwd: string | undefined
   // Why the session could not tell yet whether it belongs to a station ('' once
   // it could), how many of its own retries have run, and whether the user was told.
   let joinProblem: '' | 'remote' | 'station' | 'unknown' = ''
   let joinProblemStation = ''
-  // A session whose repo is in no station that answered may belong to none:
-  // it keeps trying, but says nothing.
-  let isJoinProblemQuiet = false
   let joinRetries = 0
   let hasToldJoinProblem = false
   let isJoinRetryScheduled = false
@@ -132,13 +165,30 @@ export const register: Register = (on, options) => {
   // stopping right now, which only it may approve.
   let isKeeperWanted = false
   let keeperTaskIds: string[] = []
+  let areKeepersLoaded = false
+  let hasLoggedStopTasks = false
   let isKeeperSyncing = false
   let isKeeperResyncNeeded = false
-  let keeperFailedAt = 0
+  // When the keeper last failed to start; never, at first (the host's clock may start at 0).
+  let keeperFailedAt = Number.NEGATIVE_INFINITY
   let keeperStartsInFlight = 0
+  let keeperCommandInFlight = ''
+  let keeperStartedAt = 0
+  // When the keeper was last checked, to tell a suspended computer (a long gap
+  // between checks) from a keeper that stopped.
+  let lastKeeperCheckAt = 0
+  let keeperGraceUntil = 0
+  // A problem is told once in a notice and, while it lasts, in the status
+  // line, which has one place: the station's connection first, then the keeper.
+  let hasToldKeeperProblem = false
+  let keeperProblem = ''
+  let hasToldOffline = false
   const keeperStopsInFlight = new Set<string>()
   let areSessionToolsRegistered = false
   let proposeToolName = ''
+  let findReposToolName = ''
+  // The dispatcher's context in a coordination session, for find_repos.
+  let dispatcherContext: DispatcherContext | undefined
   // The map of the station this session belongs to. It goes with the session's
   // first message as added context (waiting a moment for it while it is being
   // read), and again after /clear or a compaction, which drop it.
@@ -146,6 +196,17 @@ export const register: Register = (on, options) => {
   // The room this session belongs to, known as soon as its map is.
   let ownFolder = ''
   let isMapDelivered = false
+  // The user prompts the session held at the last message: fewer now means a
+  // compaction dropped the earlier ones, and the map with them. session.compact
+  // says so too, but the app may pass over it (see classicHooks).
+  let lastTurns: number | undefined
+  // Whether the app runs this mod's classic hooks and its tool.check. On Team
+  // and Enterprise accounts the app's own security plugin passes over them for
+  // plugins the user installed: the mod then asks its confirmations itself
+  // and reads permission waits from tool.check queries. Undecided until a call
+  // of the agent's has gone through; undecided counts as passed over, so a
+  // confirmation is never lost.
+  let classicHooks: 'unknown' | 'run' | 'skipped' = 'unknown'
   // Settles once the session knows whether it belongs to a station (and, if it
   // does, has its map), so the first message waits for that and no longer.
   let markMapSettled: () => void = () => {}
@@ -183,7 +244,9 @@ export const register: Register = (on, options) => {
         urls = await readStationUrlsFromSettings(io)
         allKeys = new Set([...allKeys, ...urls.map(artifactKey).filter((key): key is string => !!key)])
       }
-      const read = await Promise.all(urls.map(url => readStationConfig(io, url).catch(() => undefined)))
+      stationErrors.clear()
+      const read = await Promise.all(urls.map(url => readStationConfig(io, url, error => stationErrors.set(url, error))
+        .catch(error => { stationErrors.set(url, String((error as Error)?.message ?? error)); return undefined })))
       allKeys = new Set([...allKeys, ...read.flatMap(s => (s ? [...s.officeKeys] : []))])
       const result = { read, isComplete: read.every(s => !!s) }
       if (!result.isComplete) {
@@ -205,25 +268,39 @@ export const register: Register = (on, options) => {
     membership ??= (async () => {
       let isWorthRetrying = false
       try {
-        remoteRead ??= io.cwd().then(cwd => readOriginRemoteAnswer(io, cwd)).catch(() => ({ isFinal: false }))
+        const cwd = await io.cwd()
+        membershipCwd = cwd
+        // A spare session waits in a folder of the app's until it is given
+        // its project: nothing is decided there, the next event asks again.
+        if (SPARE_FOLDER.test(cwd)) {
+          isWorthRetrying = true
+          joinProblem = ''
+          logJoin(`cwd ${cwd} is one of the app's spare folders: waiting for the session to move to its project`)
+          return null
+        }
+        remoteRead ??= readOriginRemoteAnswer(io, cwd).catch(() => ({ isFinal: false }))
         const answer = await remoteRead
         if (!answer.remote) {
           if (answer.isFinal) {
             joinProblem = ''
+            logJoin(`cwd ${cwd}: no origin remote, or not a git repo: this session belongs to no station while it stays there`)
             return null
           }
           isWorthRetrying = true
           joinProblem = 'remote'
+          logJoin(`cwd ${cwd}: git could not read the origin remote; trying again in a minute`)
           return null
         }
         const remote = answer.remote
         const { read } = await loadStations(io)
+        // Every station's answer, in the order of the option.
+        const answers = read.map((candidate, k) => `${urls[k] ?? '?'}: ${candidate ? (folderForRemote(remote, candidate.repos) ? 'lists this repo' : 'answered') : `did not answer (${stationErrors.get(urls[k] ?? '') || 'no error given'})`}`).join('; ')
         for (const [index, candidate] of read.entries()) {
           if (!candidate) {
             isWorthRetrying = true
             joinProblem = 'station'
             joinProblemStation = urls[index] ?? ''
-            isJoinProblemQuiet = !read.slice(index + 1).some(later => !!later && !!folderForRemote(remote, later.repos))
+            logJoin(`cwd ${cwd}; remote ${remote}; ${answers}; waiting for ${joinProblemStation}, which comes first in the stations option`)
             return null
           }
           const folder = folderForRemote(remote, candidate.repos)
@@ -232,13 +309,16 @@ export const register: Register = (on, options) => {
           officeUrl = candidate.officeUrl
           ownKeys = candidate.officeKeys
           joinProblem = ''
+          logJoin(`cwd ${cwd}; remote ${remote}; ${answers}; joined room ${folder} of ${candidate.officeUrl}`)
           return { station: candidate, folder }
         }
         joinProblem = ''
+        logJoin(`cwd ${cwd}; remote ${remote}; ${answers}; this repo is in no station`)
         return null
-      } catch {
+      } catch (error) {
         isWorthRetrying = true
         joinProblem = 'unknown'
+        logJoin(`the check failed: ${String((error as Error)?.message ?? error)}`)
         return null
       } finally {
         if (isWorthRetrying) void Promise.resolve().then(() => { membership = undefined })
@@ -250,9 +330,21 @@ export const register: Register = (on, options) => {
   // propose_order and /coordinator are registered as soon as the session
   // binds, so they are there from the first turn; a failed attempt is retried
   // on the next tool call.
+  // A kept answer that the session is not in a station is thrown away when the
+  // session has moved to another folder since, so it is worked out again there.
+  async function forgetIfMoved(engine: EngineIo) {
+    if (areSessionToolsRegistered || membershipCwd === undefined) return
+    const cwd = await engine.cwd().catch(() => membershipCwd)
+    if (cwd === membershipCwd) return
+    membership = undefined
+    remoteRead = undefined
+    membershipCwd = undefined
+  }
+
   async function registerSessionTools(engine: EngineIo, calls: SessionCalls) {
     if (areSessionToolsRegistered) return
     try {
+      await forgetIfMoved(engine)
       const member = await resolveMembership(engine)
       if (!member) {
         markMapSettled()
@@ -276,6 +368,10 @@ export const register: Register = (on, options) => {
       const registered: any = await calls.registerTool({ ...PROPOSE_SPEC, description: `${PROPOSE_SPEC.description} Rooms of this station, by folder: ${roomsLine(member.station)}. This session is in the room \`${member.folder}\`.` })
       proposeToolName = String(registered?.tool ?? (pluginName ? expectedTool : ''))
       if (proposeToolName && proposeToolName !== expectedTool) stationMapText = stationMap(member.station, member.folder, proposeToolName)
+      if (member.station.coordination && member.folder === member.station.coordination) {
+        const found: any = await calls.registerTool(FIND_REPOS_SPEC).catch(() => undefined)
+        findReposToolName = String(found?.tool ?? (pluginName ? `mcp__${pluginName}__${FIND_REPOS_TOOL_NAME}` : ''))
+      }
       await calls.registerCommand(coordinatorCommand(member.station.language)).catch(() => {})
       areSessionToolsRegistered = true
     } catch {
@@ -301,11 +397,11 @@ export const register: Register = (on, options) => {
   // Said once, when the session's own retry a minute later fails too, so a slow
   // start says nothing.
   function tellJoinProblem(engine: EngineIo) {
-    if (hasToldJoinProblem || joinRetries < 1 || (joinProblem === 'station' && isJoinProblemQuiet)) return
+    if (hasToldJoinProblem || joinRetries < 1) return
     hasToldJoinProblem = true
     const language = stationsRead?.read.find(s => !!s)?.language
     const reason = joinProblem === 'remote' ? tx(language, 'git could not read the remote of its repo')
-      : joinProblem === 'station' ? tx(language, 'the station {url} does not answer', { url: joinProblemStation })
+      : joinProblem === 'station' ? tx(language, 'the station {url} could not be read: {error}', { url: joinProblemStation, error: shortError(stationErrors.get(joinProblemStation) || tx(language, 'no answer'), STATUS_ERROR_MAX) })
       : tx(language, 'it could not be checked')
     engine.toast(tx(language, 'Agent station: this session could not join its station yet ({reason}). It keeps trying; if it does not join, run /reload-plugins.', { reason }))
   }
@@ -346,6 +442,11 @@ export const register: Register = (on, options) => {
   // first message waits for it while the station is being read.
   on('prompt.submit', async ($, e, next) => {
     updateReport({ state: 'working' satisfies SessionState, tool: null, detail: null, waitKind: null }, false)
+    const turns = await $.session.turns().catch(() => undefined)
+    if (typeof turns === 'number') {
+      if (lastTurns !== undefined && turns < lastTurns) isMapDelivered = false
+      lastTurns = turns
+    }
     // A message from another session to the coordination session carries the
     // reminder that it does not forward work or results between rooms.
     if (isCoordination && proposeToolName && isPeerMessage(e.origin)) e = { ...e, context: [...(e.context ?? []), coordinationPeerNote(proposeToolName, station?.language, `/${coordinatorCommand(station?.language ?? 'en').name}`)] }
@@ -387,7 +488,14 @@ export const register: Register = (on, options) => {
   })
 
   on('session.end', ($, e, next) => {
-    if (e.reason === 'clear') isMapDelivered = false
+    // A /clear goes on in the same process and the same app session: it keeps
+    // reporting, and only needs the map again.
+    if (e.reason === 'clear') {
+      isMapDelivered = false
+      return next(e)
+    }
+    isSessionOver = true
+    updateReport({ state: 'ended' satisfies SessionState, tool: null, detail: null, waitKind: null, endedAt: Date.now() }, true)
     return next(e)
   })
 
@@ -395,8 +503,13 @@ export const register: Register = (on, options) => {
     startOnce(engineIoFor($, callToolAsMod), sessionCallsFor($), 'working')
     // Never let an agent's write through before the stations' ids are known.
     if (io && !isOwnCall(e) && (isArtifactDataWrite(e.tool, e) || isArtifactPageChange(e.tool, e))) await loadStations(io)
+    // Where the app passes over PreToolUse, its confirmation is asked here.
+    if (classicHooks !== 'run' && !isOwnCall(e)) {
+      const ask = confirmationFor(e.tool, e)
+      if (ask && !(await isConfirmedByUser((question, options) => $.ui.ask(question, options), ask))) return { deny: tx(station?.language, 'The user did not allow it.') }
+    }
     // The station page itself: only its own coordination session may republish
-    // or delete it, and the user is asked (PreToolUse below).
+    // or delete it, and the user is asked (confirmationFor).
     if (isArtifactPageChange(e.tool, e) && isStationUrl(e)) {
       if (isOwnStationPageChange(e)) return next(e)
       return { deny: 'Agents may not republish or delete a station page. Ask the user, or the station\'s coordination session, to do it.' }
@@ -412,18 +525,21 @@ export const register: Register = (on, options) => {
     }
     if (e.tool === DESKTOP_SESSION_TOOL || isOwnKeeperCall(e.tool, e)) return next(e)
     if (isProposeTool(e.tool)) return { result: await proposeOrder(e) } as any
+    if (findReposToolName && e.tool === findReposToolName) return { result: await findReposForAgent() } as any
     const isQuestion = QUESTION_TOOLS.has(e.tool)
     const droneKey = SUBAGENT_TOOLS.has(e.tool) ? String((e as any).tool_use_id ?? Math.random()) : ''
     if (droneKey) activeDrones.set(droneKey, String((e as any).subagent_type || 'general-purpose'))
+    const isPermissionWait = !isQuestion && await isPermissionDialogLikely(args => $.tool.check(args), ms => $.clock.sleep(ms), e)
     updateReport({
-      state: (isQuestion ? 'waiting' : 'working') satisfies SessionState,
+      state: (isQuestion || isPermissionWait ? 'waiting' : 'working') satisfies SessionState,
       tool: e.tool,
       detail: toolDetail(e.tool, e),
-      waitKind: isQuestion ? 'question' : null,
+      waitKind: isQuestion ? 'question' : isPermissionWait ? 'permission' : null,
       drones: [...activeDrones.values()],
-    }, isQuestion || !!droneKey)
+    }, isQuestion || isPermissionWait || !!droneKey)
     try {
       const result = await next(e)
+      if (classicHooks === 'unknown') setClassicHooks('skipped')
       if (report.state === 'waiting') updateReport({ state: 'working' satisfies SessionState, waitKind: null }, true)
       return result
     } finally {
@@ -443,7 +559,10 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // Only the main loop's turn ending leaves the session idle: a subagent's
+  // (e.agentId) ends inside the session's own turn, which goes on.
   on('turn.complete', async ($, e, next) => {
+    if (e.agentId !== undefined) return next(e)
     const result = await next(e)
     refreshDesktopDetailsInBackground()
     updateReport({ state: 'idle' satisfies SessionState, tool: null, detail: null, waitKind: null }, true)
@@ -458,15 +577,16 @@ export const register: Register = (on, options) => {
     const tasks = (e as any).background_tasks
     // A list taken while the mod starts a keeper may not show it yet.
     if (isCoordination && Array.isArray(tasks) && keeperStartsInFlight === 0) {
-      keeperTaskIds = tasks.filter(task => String(task?.command ?? '').includes(KEEPER_MARK)).map(task => String(task.id))
+      const keepers = tasks.filter(task => String(task?.command ?? '').includes(KEEPER_MARK)).map(task => String(task.id))
+      // Logged once per load: what the app lists, to tell its list apart from the mod's.
+      if (!hasLoggedStopTasks) {
+        hasLoggedStopTasks = true
+        logStationEvent('keep-awake', `the turn's end lists ${tasks.length} background task(s), ${keepers.length} of them keepers`)
+      }
+      areKeepersLoaded = true
+      setKeeperIds(keepers)
       void syncKeeper()
     }
-    return next(e)
-  })
-
-  on('classic.SessionEnd', ($, e, next) => {
-    isSessionOver = true
-    updateReport({ state: 'ended' satisfies SessionState, tool: null, detail: null, waitKind: null, endedAt: Date.now() }, true)
     return next(e)
   })
 
@@ -488,40 +608,74 @@ export const register: Register = (on, options) => {
 
   // The mod's own station calls must never open a permission dialog, also on
   // an app that does not raise tool.check; the agent's calls go through the
-  // normal permission flow. A write the guard
-  // cannot place (a URL it does not recognise, or an alias of a station that
-  // has not answered yet) asks the user instead of passing silently.
+  // normal permission flow, and the ones in confirmationFor ask the user.
+  // Its firing at all tells the mod the app runs its classic hooks.
   on('classic.PreToolUse', ($, e, next) => {
+    if (classicHooks !== 'run') setClassicHooks('run')
     const input = e.tool_input
-    // Work between rooms goes through propose_order and its approval: a message
-    // straight to another session of the app asks the user.
-    if (station && isDirectSessionMessage(e.tool_name, input)) {
-      return { ask: tx(station.language, 'This agent wants to write to another Claude Code session directly, outside the station. Work between rooms goes through propose_order, which waits for your approval in the station: allow this only if you asked for it.') }
-    }
     if (isOwnCall(input) && isOfficeCall(allKeys, e.tool_name, input)) return { allow: true }
     if (isOwnKeeperCall(e.tool_name, input)) return { allow: true }
-    if (isArtifactPageChange(e.tool_name, input) && isStationUrl(input) && isOwnStationPageChange(input)) {
+    const ask = confirmationFor(e.tool_name, input)
+    return ask ? { ask } : next(e)
+  })
+
+  // The calls the user confirms before they run, with the reason shown: a
+  // message straight to another session (work between rooms goes through
+  // propose_order and its approval), a change to the station page, a write of
+  // the coordination session to its station, and a station write the guard
+  // cannot place (a URL it does not recognise, or an alias of a station that
+  // has not answered yet).
+  function confirmationFor(tool: string, input: any): string | undefined {
+    if (station && isDirectSessionMessage(tool, input)) {
+      return tx(station.language, 'This agent wants to write to another Claude Code session directly, outside the station. Work between rooms goes through propose_order, which waits for your approval in the station: allow this only if you asked for it.')
+    }
+    if (isArtifactPageChange(tool, input) && isStationUrl(input) && isOwnStationPageChange(input)) {
       const isDelete = String(input?.action ?? 'publish') === 'delete'
       const ask = isDelete
         ? 'The coordination session wants to delete the station page ({url}).'
         : 'The coordination session wants to republish the station page ({url}).'
-      return { ask: tx(station?.language, ask, { url: String(input?.url) }) }
+      return tx(station?.language, ask, { url: String(input?.url) })
     }
-    if (isArtifactDataWrite(e.tool_name, input) && !isOwnCall(input)) {
-      if (isOfficeCall(allKeys, e.tool_name, input)) {
-        if (isCoordinationWrite(input)) return { ask: describeCoordinationWrite(input, station?.language) }
-        return next(e)
-      }
-      const unverified = describeUnverifiedWrite(input)
-      if (unverified) return { ask: unverified }
+    if (isArtifactDataWrite(tool, input) && !isOwnCall(input)) {
+      if (isOfficeCall(allKeys, tool, input)) return isCoordinationWrite(input) ? describeCoordinationWrite(input, station?.language) : undefined
+      return describeUnverifiedWrite(input)
     }
-    return next(e)
-  })
+    return undefined
+  }
+
+  function setClassicHooks(state: 'run' | 'skipped') {
+    classicHooks = state
+    if (state === 'skipped') logStationEvent('hooks', 'the app passes over the classic hooks: confirmations are asked as questions and permission waits are read from tool.check')
+  }
+
+  // The confirmation asked as a question, where no PreToolUse can ask it. A
+  // dismissed question, or none possible, refuses the call.
+  async function isConfirmedByUser(askUser: (question: string, options: AskOptions) => Promise<string>, ask: string): Promise<boolean> {
+    const language = station?.language
+    const allow = tx(language, 'Allow')
+    try {
+      const answer = await askUser(`${ask} ${tx(language, 'Allow it?')}`, { options: [allow, tx(language, 'Deny')], header: tx(language, 'Station') })
+      return answer === allow
+    } catch {
+      return false
+    }
+  }
+
+  // Where the app passes over PermissionRequest, a call the permission check
+  // would put to the user is marked as waiting for them. Only in the modes
+  // where the check is the whole decision: auto mode's classifier may still
+  // let the call through, and the mark would stay while it runs.
+  async function isPermissionDialogLikely(check: (args: { tool: string; input: unknown }) => Promise<{ decision: string }>, sleep: (ms: number) => Promise<unknown>, e: any): Promise<boolean> {
+    if (classicHooks !== 'skipped' || !PERMISSION_CHECKED_MODES.has(String(report.permissionMode ?? ''))) return false
+    const { tool, tool_use_id: _id, agentId: _agent, ...input } = e
+    const verdict = await Promise.race([check({ tool, input }).catch(() => undefined), sleep(PERMISSION_CHECK_MS).then(() => undefined)])
+    return verdict?.decision === 'ask'
+  }
 
   // Only the keeper this mod is starting, or one it is stopping: the same
   // command from the agent goes through the normal permission flow.
   function isOwnKeeperCall(tool: string, input: any) {
-    if (tool === 'Bash') return keeperStartsInFlight > 0 && input?.command === KEEPER_COMMAND
+    if (tool === 'Bash') return keeperStartsInFlight > 0 && !!keeperCommandInFlight && input?.command === keeperCommandInFlight
     if (tool === 'TaskStop') return keeperStopsInFlight.has(String(input?.task_id ?? ''))
     return false
   }
@@ -541,40 +695,98 @@ export const register: Register = (on, options) => {
     }
     isKeeperSyncing = true
     try {
+      // After a reload of the plugin, the keepers it had started are read back
+      // from the session's state, so it never starts another one.
+      if (!areKeepersLoaded) {
+        const held = await io.readKeepers?.().catch(() => [] as string[]) ?? []
+        areKeepersLoaded = true
+        setKeeperIds([...new Set([...held, ...keeperTaskIds])])
+      }
       do {
         isKeeperResyncNeeded = false
         const extra = isKeeperWanted ? keeperTaskIds.slice(1) : keeperTaskIds
         for (const id of extra) await stopKeeper(id)
-        if (isKeeperWanted && !keeperTaskIds.length && Date.now() - keeperFailedAt >= KEEPER_RETRY_MS) await startKeeper()
+        if (isKeeperWanted) {
+          const now = await clockNow()
+          // A long gap since the last check means this process slept with the
+          // computer, and the keeper with it: it is given time to beat again.
+          if (lastKeeperCheckAt > 0 && now - lastKeeperCheckAt > KEEPER_STALE_MS) keeperGraceUntil = now + KEEPER_WAKE_GRACE_MS
+          lastKeeperCheckAt = now
+          const isBeating = await isKeeperBeating(now)
+          const isJudged = now >= keeperGraceUntil
+          // A keeper known but not beating is stopped and forgotten before
+          // another starts: one that is only frozen or hung would otherwise
+          // run on beside the new one. One just started gets time for its
+          // first beat.
+          if (isJudged && keeperTaskIds.length && !isBeating && now - keeperStartedAt >= KEEPER_STALE_MS) {
+            for (const id of [...keeperTaskIds]) await stopKeeper(id)
+            setKeeperIds([])
+          }
+          // One beating that the plugin does not know (started before a
+          // reload that lost its id) is left alone: no second one starts.
+          if (isJudged && !keeperTaskIds.length && !isBeating && now - keeperFailedAt >= KEEPER_RETRY_MS) await startKeeper(now)
+        }
       } while (isKeeperResyncNeeded && !isSessionOver)
     } catch {} finally {
       isKeeperSyncing = false
     }
   }
 
-  async function startKeeper() {
+  async function clockNow(): Promise<number> {
+    return (await io?.now?.().catch(() => undefined)) ?? Date.now()
+  }
+
+  // The keeper's beat: the time its command last wrote, in a file of this
+  // session's under ~/.claude/agent-station-logs.
+  async function keeperBeatPath(): Promise<string> {
+    const home = await io?.userProfile().catch(() => undefined)
+    return home ? joinPath(home, '.claude', LOG_FOLDER, `keeper-${docId || 'unknown'}.beat`).replace(/\\/g, '/') : ''
+  }
+
+  async function isKeeperBeating(now: number): Promise<boolean> {
+    const path = await keeperBeatPath()
+    if (!path || !io) return false
+    try {
+      const seconds = Number(String(await io.readText(path)).trim())
+      return Number.isFinite(seconds) && seconds > 0 && now - seconds * 1000 < KEEPER_STALE_MS
+    } catch {
+      return false
+    }
+  }
+
+  async function startKeeper(now: number) {
     if (!io) return
+    const beatPath = await keeperBeatPath()
+    if (!beatPath) return
     keeperStartsInFlight++
+    keeperCommandInFlight = keeperCommand(beatPath)
     try {
       const reply: any = await io.callTool({
         tool: 'Bash',
-        command: KEEPER_COMMAND,
+        command: keeperCommandInFlight,
         run_in_background: true,
         description: tx(station?.language, 'Keep the station dispatcher awake'),
       })
       const id = reply?.result?.backgroundTaskId
       if (id) {
-        keeperTaskIds = [String(id)]
-        keeperFailedAt = 0
+        setKeeperIds([...keeperTaskIds, String(id)])
+        keeperStartedAt = now
+        keeperFailedAt = Number.NEGATIVE_INFINITY
+        setKeeperProblem('')
       } else {
-        keeperFailedAt = Date.now()
-        logStationEvent('keep-awake', `the keeper did not start: ${shortError(String(reply?.deny ?? JSON.stringify(reply ?? null)), LOG_ERROR_MAX)}`)
+        keeperFailedAt = now
+        const error = String(reply?.deny ?? JSON.stringify(reply ?? null))
+        logStationEvent('keep-awake', `the keeper did not start: ${shortError(error, LOG_ERROR_MAX)}`)
+        setKeeperProblem(error)
       }
     } catch (error) {
-      keeperFailedAt = Date.now()
-      logStationEvent('keep-awake', `the keeper did not start: ${String((error as Error)?.message ?? error)}`)
+      keeperFailedAt = now
+      const message = String((error as Error)?.message ?? error)
+      logStationEvent('keep-awake', `the keeper did not start: ${message}`)
+      setKeeperProblem(message)
     } finally {
       keeperStartsInFlight--
+      if (!keeperStartsInFlight) keeperCommandInFlight = ''
     }
   }
 
@@ -585,8 +797,35 @@ export const register: Register = (on, options) => {
       await io.callTool({ tool: 'TaskStop', task_id: id })
     } catch {} finally {
       keeperStopsInFlight.delete(id)
-      keeperTaskIds = keeperTaskIds.filter(other => other !== id)
+      setKeeperIds(keeperTaskIds.filter(other => other !== id))
     }
+  }
+
+  // Told once in a notice, with what to do; shown in the status line while it
+  // lasts, unless the station's connection is down, which goes first.
+  function setKeeperProblem(error: string) {
+    const language = station?.language
+    const isAutoMode = /auto mode/i.test(error)
+    keeperProblem = !error ? '' : isAutoMode
+      ? tx(language, 'auto mode refuses its command')
+      : shortError(error, STATUS_ERROR_MAX)
+    if (keeperProblem && !hasToldKeeperProblem) {
+      hasToldKeeperProblem = true
+      io?.toast(isAutoMode
+        ? tx(language, 'Agent station: KEEP AWAKE cannot start its command, because auto mode refuses it. Run this coordination session with permissions bypassed for it to work. It keeps trying every ten minutes.')
+        : tx(language, 'Agent station: KEEP AWAKE cannot start its command ({error}). It keeps trying every ten minutes.', { error: keeperProblem }))
+    }
+    showStatus()
+  }
+
+  function showStatus() {
+    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) return
+    io?.status(keeperProblem ? tx(station?.language, 'station: KEEP AWAKE does not start ({problem})', { problem: keeperProblem }) : undefined)
+  }
+
+  function setKeeperIds(ids: string[]) {
+    keeperTaskIds = ids
+    void io?.writeKeepers?.(ids).catch(() => {})
   }
 
   function isAgentWrite(input: any) {
@@ -688,6 +927,7 @@ export const register: Register = (on, options) => {
 
   async function startReporting(io: EngineIo, initialState: SessionState): Promise<boolean> {
     try {
+      await forgetIfMoved(io)
       const member = await resolveMembership(io)
       if (!member) return false
       const machine = (await io.computerName()) ?? ''
@@ -710,10 +950,19 @@ export const register: Register = (on, options) => {
         endedAt: null,
         branch: await readSessionBranch(io),
         inWorktree: await isInWorktree(io),
+        // The station page warns when KEEP AWAKE is on and the session that
+        // dispatches is not in bypassPermissions, where its command cannot start.
+        permissionMode: desktop?.permissionMode ?? null,
       }, true)
       isCoordination = !!member.station.coordination && member.folder === member.station.coordination
+      // Every feature of the station works only with permissions bypassed (in
+      // organizations, Claude Code's built-in security plugin answers the
+      // plugin's own permission hooks first): the coordination says so once.
+      if (isCoordination && desktop?.permissionMode && desktop.permissionMode !== 'bypassPermissions') {
+        io.toast(tx(member.station.language, 'Agent station: this coordination session runs in the {mode} permission mode. The station works fully only with permissions bypassed; in auto mode, KEEP AWAKE cannot start.', { mode: desktop.permissionMode }))
+      }
       if (isCoordination && desktop?.sessionId) {
-        startDispatcherInBackground({
+        dispatcherContext = {
           io,
           officeUrl,
           station: member.station,
@@ -721,13 +970,24 @@ export const register: Register = (on, options) => {
           ownSessionId: docId,
           isAlive: () => isReporting && !isSessionOver,
           setKeepAwake,
-        })
+        }
+        startDispatcherInBackground(dispatcherContext)
       }
       return true
     } catch {
       isReporting = false
       return false
     }
+  }
+
+  // find_repos, for the coordination session's agent: the dispatcher looks for
+  // the station's repos again and says what it found.
+  async function findReposForAgent(): Promise<string> {
+    if (!dispatcherContext) return 'The dispatcher has not started in this session yet: it starts once the session has joined its station. Try again in a moment.'
+    const { machine, rooms, missing } = await findRepos(dispatcherContext)
+    const found = rooms.length ? rooms.map(room => `${room.folder} (${room.path})`).join(', ') : 'none'
+    const absent = missing.length ? ` Rooms of the station with no clone next to the coordination repo on ${machine}: ${missing.join(', ')}. Orders that need a new session there cannot be delivered on this machine until they are cloned.` : ' Every room of the station has its clone here.'
+    return `Looked for the station's repos again on ${machine}. Rooms found: ${found}.${absent} The station shows this list in CONFIGURE, REPOS.`
   }
 
   async function proposeOrder(input: any): Promise<string> {
@@ -746,8 +1006,11 @@ export const register: Register = (on, options) => {
     const base = input.base === undefined || input.base === null || String(input.base).trim() === '' ? null : String(input.base).trim()
     if (base !== null && !isBranchName(base)) return `Not proposed: "${base.slice(0, 80)}" is not a branch name. Give the branch as git shows it (letters, digits and . _ / -), or leave base out to start from the branch the room's checkout is on.`
     const mode = ORDER_MODES.has(String(input.mode)) ? String(input.mode) : 'any'
-    const target = mode === 'new' ? undefined : await findReplyTarget(folder, input.session_id ? String(input.session_id).trim() : '')
-    if (typeof target === 'string') return target
+    const found = mode === 'new' ? undefined : await findReplyTarget(folder, input.session_id ? String(input.session_id).trim() : '')
+    if (typeof found === 'string') return found
+    // A reply whose asker is gone goes to the room, and says whom it answered.
+    const gone = found && 'gone' in found ? found.gone : undefined
+    const target = found && !('gone' in found) ? found : undefined
     const orderId = `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
     const reply = await callOffice(io, officeUrl, {
       action: 'set',
@@ -762,6 +1025,7 @@ export const register: Register = (on, options) => {
         sessionId: target?.id ?? null,
         machine: target ? String(target.data.machine ?? '') || null : null,
         replyTo: target ? { sessionId: target.id, title: String(target.data.title ?? '') } : null,
+        replyGone: gone ?? null,
         base,
         status: 'proposed',
         reason,
@@ -770,15 +1034,17 @@ export const register: Register = (on, options) => {
       },
     })
     if (!reply.isOk) return `The order could not be proposed: ${reply.text.slice(0, 200)}`
-    const to = target ? ` It goes to the session «${String(target.data.title || target.id)}», or to another one of ${folder} if that one is gone.` : ''
+    const to = target ? ` It goes to the session «${String(target.data.title || target.id)}», or to another one of ${folder} if that one is gone.`
+      : gone ? ` It answers the session «${gone.title || gone.sessionId}», which no longer exists, so it goes to another session of ${folder}: make sure its text explains it from scratch, for someone who did not ask for it.` : ''
     return `Order proposed. It will be delivered only after the user approves it in the station.${to}`
   }
 
   // The session an order goes back to: the one named in session_id, or else
   // the session of that department whose order this session received last, so
   // a reply reaches whoever asked instead of any session of the department.
-  // A string is a refusal to return to the agent.
-  async function findReplyTarget(folder: string, sessionId: string): Promise<OfficeDoc | string | undefined> {
+  // A string is a refusal to return to the agent; { gone } is an asker that
+  // no longer exists, so the reply goes to the room and says whom it answered.
+  async function findReplyTarget(folder: string, sessionId: string): Promise<OfficeDoc | string | { gone: { sessionId: string; title: string } } | undefined> {
     if (!io) return undefined
     if (sessionId) {
       const reply = await callOffice(io, officeUrl, { action: 'get', collection: 'sessions', doc_id: sanitizeDocId(sessionId) })
@@ -796,9 +1062,13 @@ export const register: Register = (on, options) => {
       .filter(order => order.data.proposedBy?.folder === folder && order.data.proposedBy?.sessionId)
       .sort((a, b) => Number(b.data.deliveredAt ?? 0) - Number(a.data.deliveredAt ?? 0))[0]
     if (!asker) return undefined
-    const reply = await callOffice(io, officeUrl, { action: 'get', collection: 'sessions', doc_id: String(asker.data.proposedBy.sessionId) })
+    const askerId = String(asker.data.proposedBy.sessionId)
+    const reply = await callOffice(io, officeUrl, { action: 'get', collection: 'sessions', doc_id: askerId })
     const session = reply.isOk ? parseDocs(reply.text)[0] : undefined
-    return session && session.data.state !== 'ended' ? session : undefined
+    if (session && session.data.state !== 'ended') return session
+    // Read but gone (ended, or no longer in the station): told, not hidden.
+    if (!reply.isOk) return undefined
+    return { gone: { sessionId: askerId, title: String(session?.data.title ?? asker.data.proposedBy.title ?? '') } }
   }
 
   function refreshDesktopDetailsInBackground() {
@@ -808,6 +1078,7 @@ export const register: Register = (on, options) => {
         const patch: Record<string, unknown> = {}
         if (desktop?.title && desktop.title !== report.title) patch.title = desktop.title
         if (desktop?.model && desktop.model !== report.model) patch.model = desktop.model
+        if (desktop?.permissionMode && desktop.permissionMode !== report.permissionMode) patch.permissionMode = desktop.permissionMode
         if (Object.keys(patch).length > 0) updateReport(patch, false)
       })
       .catch(() => {})
@@ -873,11 +1144,16 @@ export const register: Register = (on, options) => {
         const failure = await writeReportToOffice({ ...report })
         lastWriteAt = Date.now()
         if (!failure) {
-          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-            io?.status(undefined)
-            logStationEvent('set', `reconnected after ${consecutiveFailures} failed writes`)
-          }
+          const failedWrites = consecutiveFailures
           consecutiveFailures = 0
+          if (failedWrites >= MAX_CONSECUTIVE_FAILURES) {
+            showStatus()
+            logStationEvent('set', `reconnected after ${failedWrites} failed writes`)
+            if (hasToldOffline) {
+              hasToldOffline = false
+              io?.toast(tx(station?.language, 'Agent station: this session reaches the station again.'))
+            }
+          }
           continue
         }
         // Keep the report: the next write sends it, or the retry below.
@@ -886,6 +1162,10 @@ export const register: Register = (on, options) => {
         logStationEvent(failure.action, `failure ${consecutiveFailures}: ${failure.error}`)
         if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
           io?.status(tx(station?.language, 'station: no connection ({error})', { error: shortError(failure.error, STATUS_ERROR_MAX) }))
+          if (!hasToldOffline) {
+            hasToldOffline = true
+            io?.toast(tx(station?.language, 'Agent station: this session cannot reach the station ({error}), so the station does not show what it does. It keeps trying; the status line says so until it reconnects.', { error: shortError(failure.error, STATUS_ERROR_MAX) }))
+          }
         }
         break
       }
@@ -905,11 +1185,14 @@ export const register: Register = (on, options) => {
       version = first.version
       return undefined
     }
-    if (!first.isVersionMismatch) return { action: 'set', error: first.text }
+    if (!first.isVersionMismatch && !MISSING_DOC.test(first.text)) return { action: 'set', error: first.text }
     const current = await callOffice(io, officeUrl, { action: 'get', ...target })
     const currentVersion = current.isOk ? parseDocs(current.text)[0]?.version : undefined
-    if (currentVersion === undefined) return { action: 'get', error: current.text }
-    const retry = await callOffice(io, officeUrl, { action: 'set', ...target, data, if_version: currentVersion })
+    // A row the dispatcher deleted meanwhile (one ended, or disconnected, a week
+    // ago, of a session that comes back) is written anew.
+    const isGone = current.isOk && currentVersion === undefined && MISSING_DOC.test(current.text)
+    if (currentVersion === undefined && !isGone) return { action: 'get', error: current.text }
+    const retry = await callOffice(io, officeUrl, { action: 'set', ...target, data, ...(isGone ? {} : { if_version: currentVersion }) })
     if (retry.version === undefined) return { action: 'set', error: retry.text }
     version = retry.version
     return undefined
@@ -921,20 +1204,40 @@ export const register: Register = (on, options) => {
   // only be rewritten whole and two sessions would overwrite each other's
   // lines. Writes are chained, and a log that cannot be written is let go.
   let logWrite: Promise<void> = Promise.resolve()
+  // Before it joins a station the session has no id there yet: the log then
+  // goes under the app's own id for the session, which is the one it gets.
+  let logId = ''
+  async function sessionLogId(engine: EngineIo): Promise<string> {
+    if (docId) return docId
+    if (!logId) logId = sanitizeDocId((await readDesktopSessionFromApp(engine))?.sessionId ?? (await engine.sessionId().catch(() => '')) ?? '')
+    return logId || 'unknown'
+  }
+
+  // Each attempt to join a station is logged when its outcome changes: the
+  // remote git gave, the stations that answered and those that did not with
+  // why, and where the session landed.
+  let lastJoinLog = ''
+  function logJoin(outcome: string) {
+    if (outcome === lastJoinLog) return
+    lastJoinLog = outcome
+    logStationEvent('join', outcome)
+  }
+
   function logStationEvent(action: string, message: string) {
     const engine = io
     if (!engine) return
-    const line = [
-      new Date().toISOString(),
-      `session=${docId || '-'}`,
-      `folder=${String(report.folder || '-')}`,
-      `action=${action}`,
-      shortError(message, LOG_ERROR_MAX),
-    ].join(' ')
     logWrite = logWrite.then(async () => {
+      const id = await sessionLogId(engine)
+      const line = [
+        new Date().toISOString(),
+        `session=${id}`,
+        `folder=${String(report.folder || '-')}`,
+        `action=${action}`,
+        shortError(message, action === 'join' ? LOG_ERROR_MAX * 3 : LOG_ERROR_MAX),
+      ].join(' ')
       const home = await engine.userProfile()
       if (!home) return
-      const path = joinPath(home, '.claude', LOG_FOLDER, `${docId || 'unknown'}.log`)
+      const path = joinPath(home, '.claude', LOG_FOLDER, `${id}.log`)
       const previous = await engine.readText(path).catch(() => '')
       const lines = [...previous.split(/\r?\n/).filter(Boolean), line].slice(-LOG_MAX_LINES)
       await engine.writeText(path, lines.join('\n') + '\n')
@@ -987,6 +1290,12 @@ function engineIoFor($: any, callToolAsMod: (callTool: (call: any) => Promise<un
     runCommand: async argv => { const r: any = await $.process.run(argv, { timeoutMs: 30000 }); return { exitCode: Number(r?.exitCode ?? 1), stdout: String(r?.stdout ?? ''), stderr: String(r?.stderr ?? '') } },
     userProfile: async () => (await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')),
     pluginName: async () => $.plugin.name,
+    now: async () => Number(await $.clock.now()),
+    readKeepers: async () => {
+      const held: any = await $.state.get({ plugin: 'agent-station', key: 'keeperTaskIds' } as const)
+      return Array.isArray(held?.value) ? held.value.map(String) : []
+    },
+    writeKeepers: async ids => { await $.state.set({ plugin: 'agent-station', key: 'keeperTaskIds' } as const, ids) },
   }
 }
 
@@ -1007,10 +1316,10 @@ function sessionCallsFor($: any): SessionCalls {
   }
 }
 
-async function readDesktopSessionFromApp(io: EngineIo): Promise<{ sessionId?: string; title?: string; link?: string; model?: string } | null> {
+async function readDesktopSessionFromApp(io: EngineIo): Promise<{ sessionId?: string; title?: string; link?: string; model?: string; permissionMode?: string } | null> {
   try {
     const parsed = JSON.parse(mcpText(await io.callMcp('ccd_session_mgmt', 'get_session', { session_id: 'self' })))
-    return { sessionId: parsed.sessionId, title: parsed.title, link: parsed.link, model: parsed.model }
+    return { sessionId: parsed.sessionId, title: parsed.title, link: parsed.link, model: parsed.model, permissionMode: typeof parsed.permissionMode === 'string' ? parsed.permissionMode : undefined }
   } catch {
     return null
   }

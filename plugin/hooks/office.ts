@@ -16,6 +16,13 @@ export type EngineIo = {
   runCommand: (argv: string[]) => Promise<{ exitCode: number; stdout: string; stderr?: string }>
   userProfile: () => Promise<string | undefined>
   pluginName: () => Promise<string | undefined>
+  // The keeper's background task ids, held by the host for the session, so a
+  // reload of the plugin still knows them; gone with the session's process,
+  // like the tasks themselves.
+  readKeepers?: () => Promise<string[]>
+  // The host's clock, which tests can move; Date.now otherwise.
+  now?: () => Promise<number>
+  writeKeepers?: (ids: string[]) => Promise<void>
 }
 
 export type OfficeReply = {

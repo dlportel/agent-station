@@ -1,5 +1,5 @@
 import { callOffice, mcpText, parseDocs, type EngineIo, type OfficeDoc } from './office'
-import { isBranchName, issueCommand, issueRepoOf, joinPath, orderClaim, orderMark, parentOf, readBranchCommit, readCheckout, readMainRepoTop, readOriginRemote, ruleForRemote, type IssueKind, type Station } from './station'
+import { isBranchName, issueCommand, issueRepoOf, joinPath, normalizeRemote, orderClaim, orderMark, parentOf, readBranchCommit, readCheckout, readMainRepoTop, readOriginRemote, readStationConfig, ruleForRemote, type IssueKind, type Station } from './station'
 import { tx } from './locale-es'
 
 // Delivers the orders written in the station to this machine's sessions. One
@@ -25,6 +25,13 @@ export type DispatcherContext = {
 type LocalRepo = { path: string; remote: string; showsIssues: boolean }
 
 const localReposByContext = new WeakMap<DispatcherContext, Promise<Map<string, LocalRepo>>>()
+const lastRescanAt = new WeakMap<DispatcherContext, number>()
+// The rooms the last scan found on this machine, and when: the dispatcher's
+// lease carries them, so CONFIGURE, REPOS shows what each machine has.
+const lastScans = new WeakMap<DispatcherContext, { at: number; rooms: string[] }>()
+// A room missing from the list is looked for again before an order for it
+// fails (for good); several orders for it at once share one rescan.
+const MISSING_ROOM_RESCAN_MS = 5_000
 
 function localRepos(context: DispatcherContext): Promise<Map<string, LocalRepo>> {
   let found = localReposByContext.get(context)
@@ -33,6 +40,32 @@ function localRepos(context: DispatcherContext): Promise<Map<string, LocalRepo>>
     localReposByContext.set(context, found)
   }
   return found
+}
+
+// The station's repos on this machine, looked for again: a repo cloned next to
+// the coordination repo, or added to the station in CONFIGURE, after the
+// dispatcher started. The station's repos are read again first; when the
+// station does not answer, the ones already known are kept.
+async function rescanLocalRepos(context: DispatcherContext): Promise<Map<string, LocalRepo>> {
+  const fresh = await readStationConfig(context.io, context.officeUrl).catch(() => undefined)
+  if (fresh && fresh.repos.length) context.station = { ...context.station, repos: fresh.repos, rooms: fresh.rooms }
+  const found = scanLocalRepos(context)
+  localReposByContext.set(context, found)
+  lastRescanAt.set(context, await clockOf(context))
+  return found
+}
+
+// The engine's clock where it gives one (the tests move it), else the system's.
+async function clockOf(context: DispatcherContext): Promise<number> {
+  const now = await context.io.now?.().catch(() => undefined)
+  return typeof now === 'number' ? now : Date.now()
+}
+
+// The local repo of a room, looking again before taking it for missing.
+async function localRepoFor(context: DispatcherContext, folder: string): Promise<LocalRepo | undefined> {
+  const known = (await localRepos(context)).get(folder)
+  if (known || !folder || (await clockOf(context)) - (lastRescanAt.get(context) ?? -Infinity) < MISSING_ROOM_RESCAN_MS) return known
+  return (await rescanLocalRepos(context)).get(folder)
 }
 
 async function scanLocalRepos(context: DispatcherContext): Promise<Map<string, LocalRepo>> {
@@ -53,10 +86,37 @@ async function scanLocalRepos(context: DispatcherContext): Promise<Map<string, L
     const match = remote ? ruleForRemote(remote, context.station.repos) : undefined
     if (match && remote && !repos.has(match.folder)) repos.set(match.folder, { path, remote, showsIssues: match.rule.issues !== false })
   }
+  lastScans.set(context, { at: Date.now(), rooms: [...repos.keys()].filter(folder => folder !== context.station.coordination).sort() })
   return repos
 }
 
+// Looks for the station's repos on this machine again, on request (the page's
+// FIND REPOS, or the coordination session's find_repos tool), and puts what it
+// found on the lease at once. The rooms of the station with no clone here are
+// the ones missing, the coordination's left out.
+export async function findRepos(context: DispatcherContext): Promise<{ machine: string; rooms: Array<{ folder: string; path: string }>; missing: string[] }> {
+  const found = await rescanLocalRepos(context)
+  await holdDispatcherLease(context)
+  const configured = new Set<string>()
+  for (const rule of context.station.repos) {
+    const normalized = normalizeRemote(rule.remote)
+    if (normalized.endsWith('/*')) continue
+    const folder = rule.folder || normalized.split('/').pop() || ''
+    if (folder && folder !== context.station.coordination) configured.add(folder)
+  }
+  return {
+    machine: context.machine,
+    rooms: [...found].filter(([folder]) => folder !== context.station.coordination).map(([folder, repo]) => ({ folder, path: repo.path })).sort((a, b) => a.folder.localeCompare(b.folder)),
+    missing: [...configured].filter(folder => !found.has(folder)).sort(),
+  }
+}
+
 const POLL_MS = 30_000
+// Between polls the dispatcher waits in short steps and reads, on each one,
+// whether the page asked to read the handoffs now (its UPDATE button), so the
+// request is answered within seconds instead of at the next poll. The wait is
+// timed by the clock, so a slow read never delays the next poll.
+const ASK_CHECK_MS = 10_000
 // The lease is renewed every LEASE_RENEW_MS and only another session may take
 // it over once it is older than LEASE_MS, so renewals have slack to fail.
 const LEASE_MS = 5 * 60_000
@@ -80,6 +140,11 @@ export function startDispatcherInBackground(context: DispatcherContext) {
     let polls = 0
     let leaseRenewedAt = 0
     let hasScannedAgents = false
+    // The last request to read the handoffs now that the page left, so each one
+    // is answered once.
+    let handoffsAskedAt: number | undefined
+    // The same for the page's request to look for the station's repos again.
+    let reposAskedAt: number | undefined
     while (context.isAlive()) {
       try {
         const isLeaseFresh = Date.now() - leaseRenewedAt < LEASE_RENEW_MS
@@ -94,6 +159,8 @@ export function startDispatcherInBackground(context: DispatcherContext) {
           if (!hasScannedAgents) {
             hasScannedAgents = true
             await syncAgentCatalog(context)
+            // What the first scan found goes on the lease now, not at its next renewal.
+            await holdDispatcherLease(context)
           }
           if (polls % HANDOFFS_EVERY_POLLS === 0) await syncHandoffs(context)
           if (polls % RECONCILE_EVERY_POLLS === 0) {
@@ -107,10 +174,34 @@ export function startDispatcherInBackground(context: DispatcherContext) {
           polls++
         }
       } catch {}
-      const hasSlept = await context.io.sleep(POLL_MS).then(() => true, () => false)
-      if (!hasSlept) return
+      const nextPollAt = await clockNow(context) + POLL_MS
+      for (let left = POLL_MS; left > 0 && context.isAlive(); left = nextPollAt - await clockNow(context)) {
+        const hasSlept = await context.io.sleep(Math.min(ASK_CHECK_MS, left)).then(() => true, () => false)
+        if (!hasSlept) return
+        if (leaseRenewedAt === 0) continue
+        try {
+          const asked = await readRefreshAsks(context)
+          // Only a newer request counts: the page writes one request at a
+          // time, and a request it writes clears the other one.
+          const isHandoffsAsked = asked !== undefined && handoffsAskedAt !== undefined && asked.handoffs > handoffsAskedAt
+          const isReposAsked = asked !== undefined && reposAskedAt !== undefined && asked.repos > reposAskedAt
+          if (asked !== undefined) { handoffsAskedAt = asked.handoffs; reposAskedAt = asked.repos }
+          if (isReposAsked) await findRepos(context)
+          if (isHandoffsAsked) await syncHandoffs(context)
+        } catch {}
+      }
     }
   })()
+}
+
+// The engine's clock, which tests can move; the system's when the engine has none.
+async function clockNow(context: DispatcherContext): Promise<number> {
+  return (await context.io.now?.().catch(() => undefined)) ?? Date.now()
+}
+
+const scanFields = (context: DispatcherContext) => {
+  const scan = lastScans.get(context)
+  return scan ? { rooms: scan.rooms, roomsScannedAt: scan.at } : {}
 }
 
 async function holdDispatcherLease(context: DispatcherContext): Promise<'held' | 'taken' | 'unknown'> {
@@ -128,10 +219,22 @@ async function holdDispatcherLease(context: DispatcherContext): Promise<'held' |
     action: 'set',
     collection: 'dispatchers',
     doc_id: leaseId,
-    data: { sessionId: ownSessionId, machine, heartbeatAt: Date.now() },
+    data: { sessionId: ownSessionId, machine, heartbeatAt: Date.now(), ...scanFields(context) },
     if_version: lease?.version,
   })
   return written.isOk ? 'held' : 'unknown'
+}
+
+// When the page last asked to read the handoffs now (config/refresh
+// handoffsAskedAt, its UPDATE button) and to look for the station's repos
+// again (reposAskedAt, the FIND REPOS button of CONFIGURE, REPOS); 0 for a
+// request never made, undefined when the document cannot be read.
+async function readRefreshAsks(context: DispatcherContext): Promise<{ handoffs: number; repos: number } | undefined> {
+  const reply = await callOffice(context.io, context.officeUrl, { action: 'get', collection: 'config', doc_id: 'refresh' })
+  if (!reply.isOk) return undefined
+  const data = parseDocs(reply.text)[0]?.data ?? {}
+  const at = (value: unknown) => { const n = Number(value); return Number.isFinite(n) && n > 0 ? n : 0 }
+  return { handoffs: at(data.handoffsAskedAt), repos: at(data.reposAskedAt) }
 }
 
 // Read every minute, so switching it in the station's settings takes effect
@@ -211,6 +314,8 @@ function readFrontmatter(text: string): Record<string, string> {
 const hostProblems = new Map<string, string | null>()
 // The newest open issues read from each repo.
 const ISSUES_PER_REPO = 100
+// A label that marks an issue as being worked on, as teams usually name it.
+const IN_PROGRESS_LABEL = /^(status[:/ ]*)?(in[ _-]?progress|doing|wip|working|en[ _-]?curso|en[ _-]?progreso)$/i
 async function issueHostProblem(context: DispatcherContext, kind: IssueKind, host: string): Promise<{ problem: string | null; isNew: boolean }> {
   const key = `${context.officeUrl}|${kind}|${host}`
   if (hostProblems.has(key)) return { problem: hostProblems.get(key) ?? null, isNew: false }
@@ -270,7 +375,10 @@ function firstLine(text: string): string {
 // read now count for the closed ones, so a room left out or unreadable never
 // shows its issues as closed. `views` holds each room's command to read one
 // issue, with <n> for its number.
-type Handoff = { number: number; title: string; url: string; from: string; createdAt: string; excerpt: string }
+type Handoff = { number: number; title: string; url: string; from: string; labels: string[]; createdAt: string; excerpt: string }
+// The labels a handoff shows: the repo's own, such as an area or a component,
+// without the ones the station already reads (handoff, from-*, in progress).
+const HANDOFF_LABELS_MAX = 8, HANDOFF_LABEL_LEN = 40
 // The start of an issue's description kept for the page, on one line, so the
 // catalog of a hundred issues per repo stays small.
 const EXCERPT_MAX = 280
@@ -283,6 +391,9 @@ async function syncHandoffs(context: DispatcherContext) {
   if (!repos.size) return
   const byFolder: Record<string, Handoff[]> = {}
   const views: Record<string, string> = {}
+  // The command that marks an issue of each room in progress, for the orders
+  // that hand a handoff to an agent.
+  const marks: Record<string, string> = {}
   const problems: Record<string, string> = {}
   // The rooms read now, and those that could not be read now.
   const read = new Set<string>()
@@ -306,13 +417,14 @@ async function syncHandoffs(context: DispatcherContext) {
       continue
     }
     const listed = await runQuietly(context, kind === 'github'
-      ? ['gh', 'issue', 'list', '--repo', repo.path, '--state', 'open', '--limit', String(ISSUES_PER_REPO), '--json', 'number,title,url,createdAt,labels,body']
+      ? ['gh', 'issue', 'list', '--repo', repo.path, '--state', 'open', '--limit', String(ISSUES_PER_REPO), '--json', 'number,title,url,createdAt,labels,assignees,body']
       : ['glab', 'issue', 'list', '-R', `https://${repo.host}/${repo.path}`, '-O', 'json', '-P', String(ISSUES_PER_REPO)])
     try {
       if (listed.exitCode !== 0) throw new Error(firstLine(listed.stderr || listed.stdout) || `exit ${listed.exitCode}`)
       const issues: any[] = JSON.parse(listed.stdout || '[]')
       read.add(folder)
       views[folder] = issueCommand(kind, repo.host, repo.path, 'view')
+      marks[folder] = issueCommand(kind, repo.host, repo.path, 'progress')
       if (issues.length) byFolder[folder] = issues.map(i => {
         const number = Number(kind === 'github' ? i.number : i.iid)
         const labels: string[] = (i.labels ?? []).map((l: any) => String(typeof l === 'string' ? l : l?.name))
@@ -321,6 +433,11 @@ async function syncHandoffs(context: DispatcherContext) {
           title: String(i.title ?? '').slice(0, 200),
           url: String((kind === 'github' ? i.url : i.web_url) ?? ''),
           from: labels.find(n => n.startsWith('from-'))?.slice(5) ?? '',
+          labels: labels.filter(n => n && n !== 'handoff' && !n.startsWith('from-') && !IN_PROGRESS_LABEL.test(n)).slice(0, HANDOFF_LABELS_MAX).map(n => n.slice(0, HANDOFF_LABEL_LEN)),
+          // Signs that someone is on it: a label such as "in progress", and
+          // who it is assigned to. The page adds the station's own orders.
+          progressLabel: labels.find(n => IN_PROGRESS_LABEL.test(n)) ?? '',
+          assignees: (i.assignees ?? []).map((a: any) => String(typeof a === 'string' ? a : a?.login ?? a?.username ?? a?.name ?? '')).filter(Boolean).slice(0, 3),
           createdAt: String((kind === 'github' ? i.createdAt : i.created_at) ?? ''),
           excerpt: excerptOf(kind === 'github' ? i.body : i.description),
         }
@@ -339,6 +456,7 @@ async function syncHandoffs(context: DispatcherContext) {
   const doc = parseDocs(current.text)[0]
   const previous: Record<string, Handoff[]> = doc?.data?.byFolder ?? {}
   const previousViews: Record<string, string> = doc?.data?.views ?? {}
+  const previousMarks: Record<string, string> = doc?.data?.marks ?? {}
   const closed: Array<{ folder: string; number: number; title: string; closedAt: number }> = (doc?.data?.closedRecently ?? [])
     .filter((c: any) => Date.now() - Number(c.closedAt ?? 0) < CLOSED_HANDOFF_KEEP_MS)
   if (doc) {
@@ -352,12 +470,13 @@ async function syncHandoffs(context: DispatcherContext) {
   for (const folder of unreadable) {
     if (previous[folder]) byFolder[folder] = previous[folder]
     if (previousViews[folder]) views[folder] = previousViews[folder]
+    if (previousMarks[folder]) marks[folder] = previousMarks[folder]
   }
   const saved = await callOffice(context.io, context.officeUrl, {
     action: 'set',
     collection: 'config',
     doc_id: 'handoffs',
-    data: { byFolder, views, problems, closedRecently: closed.slice(-20), scannedAt: Date.now(), scannedBy: context.machine },
+    data: { byFolder, views, marks, problems, closedRecently: closed.slice(-20), scannedAt: Date.now(), scannedBy: context.machine },
     if_version: doc?.version,
   })
   // A catalog the station refused (too large, or not allowed) leaves the boards
@@ -538,7 +657,7 @@ async function prepareNewSession(context: DispatcherContext, order: OfficeDoc) {
     return
   }
   // Only a repo of this station on this machine can host the new session.
-  const local = (await localRepos(context)).get(folder)
+  const local = await localRepoFor(context, folder)
   if (!local) {
     await updateOrder(context, order, { status: 'failed', note: say(context, '{room} is not a room of this station on {machine}.', { room: folder, machine: context.machine }) })
     return
@@ -609,7 +728,7 @@ function startNote(context: DispatcherContext, start: Start): string {
 // own commit is another. A session in the repo's own folder on another branch
 // is told so, and to ask the user before changing anything.
 async function branchCheckNote(context: DispatcherContext, order: OfficeDoc, session: OfficeDoc): Promise<{ note: string; start?: Start }> {
-  const local = (await localRepos(context)).get(String(order.data.folder ?? ''))
+  const local = await localRepoFor(context, String(order.data.folder ?? ''))
   if (!local) return { note: '' }
   const start = await readStart(context, order, local.path)
   if (!start.base) return { note: '', start }
@@ -710,6 +829,14 @@ async function queryOrders(context: DispatcherContext, statuses: string[], limit
 }
 
 async function updateOrder(context: DispatcherContext, order: OfficeDoc, patch: Record<string, unknown>): Promise<number | undefined> {
+  // An order that could not be delivered is told in the coordination session
+  // too, once, so the user learns it without the station page open.
+  if (patch.status === 'failed' && order.data.status !== 'failed') {
+    context.io.toast(say(context, 'Agent station: the order for {room} was not delivered: {note}', {
+      room: String(context.station.rooms[String(order.data.folder ?? '')]?.name ?? order.data.folder ?? '?'),
+      note: String(patch.note ?? say(context, 'no reason given')).slice(0, 300),
+    }))
+  }
   const reply = await callOffice(context.io, context.officeUrl, {
     action: 'update',
     collection: 'orders',

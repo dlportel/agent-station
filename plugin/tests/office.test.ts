@@ -1,5 +1,5 @@
 import { test, expect, mock } from 'claude-code/testing'
-import { isBranchName, isDirectSessionMessage, stationFromConfig, stationMap } from '../hooks/station'
+import { isBranchName, isDirectSessionMessage, issueRepoOf, stationFromConfig, stationMap } from '../hooks/station'
 
 const OFFICE = 'https://claude.ai/artifact/test-station'
 const options = { stations: OFFICE }
@@ -556,6 +556,16 @@ test('propose_order sends a reply back to the session whose order this session r
   expect(JSON.stringify(ended)).toContain('has ended')
   expect(JSON.stringify(wrong)).toContain('no session')
   expect(writes.filter(w => w.collection === 'orders').length).toBe(count)
+
+  // The asker is gone: the reply goes to the room, says whom it answered, and the agent is told.
+  sessions.local_asker = { ...sessions.local_asker, state: 'ended' }
+  const orphan: any = await $.tool.call({ tool: 'mcp__agent-station__propose_order', folder: 'app', text: 'It is done', reason: 'Reply' } as any)
+  await clock.advance(1_000)
+  const last = writes.filter(w => w.collection === 'orders').pop()
+  expect(last?.data?.sessionId).toBeNull()
+  expect(last?.data?.replyTo).toBeNull()
+  expect(last?.data?.replyGone).toEqual({ sessionId: 'local_asker', title: 'Last modified column' })
+  expect(JSON.stringify(orphan)).toContain('which no longer exists')
 })
 
 test('propose_order with no order received from that department lets the station choose', { options }, async ($, on) => {
@@ -728,7 +738,9 @@ test('a station that stays down is retried less often, shows its error, and the 
 
   // Every failure and the reconnection are in the log, one line each.
   const lines = log.trim().split('\n')
-  expect(lines[0]).toMatch(/^\d{4}-\d\d-\d\dT\S+ session=test-session-offline folder=app action=set failure 1: db write failed \(network error\)$/)
+  // The join comes first; then the failures and the reconnection.
+  expect(lines[0]).toContain('action=join cwd C:/work/app; remote https://github.com/acme/app-repo.git')
+  expect(lines[1]).toMatch(/^\d{4}-\d\d-\d\dT\S+ session=test-session-offline folder=app action=set failure 1: db write failed \(network error\)$/)
   expect(lines.at(-1)).toContain('reconnected after')
 })
 
@@ -751,7 +763,9 @@ test('the station log keeps only its last lines', { options }, async ($, on) => 
 
   const lines = log.trim().split('\n')
   expect(lines.length).toBe(200)
-  expect(lines[0]).toBe('old line 51')
+  // Two lines were added (the join and the failure), so the two oldest left past the last 200.
+  expect(lines[0]).toBe('old line 52')
+  expect(lines.at(-2)).toContain('action=join')
   expect(lines.at(-1)).toContain('session=test-session-log folder=app action=set failure 1:')
 })
 
@@ -1314,4 +1328,238 @@ test('a folder git says has no origin is left alone, with no notice', { options 
 test('a branch name is accepted only as git would take it', () => {
   for (const name of ['main', 'feature/translation-hub', 'release/2.4', 'fix_1-a']) expect(isBranchName(name)).toBe(true)
   for (const name of ['.hidden', 'feat//x', 'feat/.x', 'x.', 'x.lock', 'a..b', '-x', 'x/', '/x', 'main; rm -rf /', '']) expect(isBranchName(name)).toBe(false)
+})
+
+test('a remote with characters no plain remote has gives no issue commands', () => {
+  expect(issueRepoOf('github.com/acme/app')?.kind).toBe('github')
+  expect(issueRepoOf('gitlab.acme.test:8443/team/sub/app')?.kind).toBe('gitlab')
+  for (const remote of ['github.com/acme/app;rm -rf ~', 'gitlab.com/acme/$(curl x)/app', 'github.com/acme/a b', 'gitlab.com/acme/app&&id']) expect(issueRepoOf(remote)).toBeUndefined()
+})
+
+test('a session whose stations cannot be read logs why under its app id and says so', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  mock.env(on, { COMPUTERNAME: 'TESTPC', USERPROFILE: 'C:/Users/me' })
+  on('session.cwd' as any, () => ({ value: 'C:/work/app' }))
+  on('session.id' as any, () => ({ value: 'engine-id' }))
+  on('tool.call', { tool: 'Read' }, () => ({ result: { text: 'ok' } }) as any)
+  on('mcp.call' as any, (_$: any, e: any) => ({ value: { content: [{ type: 'text', text: e.tool === 'get_session' ? JSON.stringify({ sessionId: 'local_app_9f' }) : '' }] } }))
+  on('process.run' as any, (_$: any, e: any) => {
+    const argv: string[] = e.argv ?? e
+    return { value: argv[0] === 'git' && argv[3] === 'remote' ? { exitCode: 0, stdout: 'https://github.com/acme/app-repo.git' } : { exitCode: 128, stdout: '' } }
+  })
+  on('tool.call', { tool: 'ArtifactData' }, () => ({ deny: 'The server-side auto mode classifier gave no verdict for ArtifactData' }) as any)
+  const files: Record<string, string> = {}
+  on('fs.read' as any, (_$: any, e: any) => ({ value: files[String(e.path)] ?? '' }))
+  on('fs.write' as any, (_$: any, e: any) => { files[String(e.path)] = e.text; return { value: undefined } })
+  const toasts: string[] = []
+  on('ui.toast' as any, (_$: any, e: any) => { toasts.push(String(e?.text ?? e)); return { value: null } })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(3 * 60_000)
+
+  const log = Object.entries(files).find(([path]) => path.endsWith('local_app_9f.log'))?.[1] ?? ''
+  expect(log).toContain('action=join cwd C:/work/app; remote https://github.com/acme/app-repo.git; https://claude.ai/artifact/test-station: did not answer (The server-side auto mode classifier')
+  expect(toasts.filter(t => t.includes('could not be read: The server-side auto mode classifier')).length).toBe(1)
+})
+
+test('a station reply that is neither its configuration nor "there is none" is no answer', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-odd', 'C:/work/app')
+  const toasts: string[] = []
+  on('ui.toast' as any, (_$: any, e: any) => { toasts.push(String(e?.text ?? e)); return { value: null } })
+  on('tool.call', { tool: 'ArtifactData' }, () => ({ result: { text: 'Something unexpected happened' } }) as any)
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(3 * 60_000)
+  expect(toasts.filter(t => t.includes('could not be read: Something unexpected happened')).length).toBe(1)
+})
+
+// A session the app starts in one folder and moves to another a moment later.
+function stubMovingSession(on: any, id: string, folders: { cwd: string }) {
+  mock.env(on, { COMPUTERNAME: 'TESTPC' })
+  on('session.cwd' as any, () => ({ value: folders.cwd }))
+  on('session.id' as any, () => ({ value: id }))
+  on('tool.call', { tool: 'Read' }, () => ({ result: { text: 'ok' } }) as any)
+  on('process.run' as any, (_$: any, e: any) => {
+    const argv: string[] = e.argv ?? e
+    const remote = argv[0] === 'git' && argv[3] === 'remote' ? REMOTES[argv[2]] : undefined
+    return { value: remote ? { exitCode: 0, stdout: remote + '\n' } : { exitCode: 128, stdout: '' } }
+  })
+}
+
+test('a session started in a spare folder joins its station once the app moves it to its project', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const folders = { cwd: 'C:/Users/me/.claude-spares/spare-1a2b' }
+  stubMovingSession(on, 'test-session-spare', folders)
+  const writes: any[] = []
+  stubStation(on, e => { writes.push(e); return { result: { text: `The document is now at version ${writes.length}.` } } })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+  expect(writes.some(w => w.collection === 'sessions')).toBe(false)
+
+  folders.cwd = 'C:/work/app'
+  await $.tool.call({ tool: 'Read', file_path: 'C:/y.md' } as any)
+  await clock.advance(5_000)
+  expect(writes.some(w => w.collection === 'sessions' && w.data?.folder === 'app')).toBe(true)
+})
+
+test('a session that was in no repo joins when it moves to one', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const folders = { cwd: 'C:/Users/me/Desktop' }
+  stubMovingSession(on, 'test-session-moved', folders)
+  const writes: any[] = []
+  stubStation(on, e => { writes.push(e); return { result: { text: `The document is now at version ${writes.length}.` } } })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+  expect(writes.some(w => w.collection === 'sessions')).toBe(false)
+
+  folders.cwd = 'C:/work/legal'
+  await $.tool.call({ tool: 'Read', file_path: 'C:/y.md' } as any)
+  await clock.advance(5_000)
+  expect(writes.some(w => w.collection === 'sessions' && w.data?.folder === 'legal')).toBe(true)
+})
+
+test('where the app runs PreToolUse, a confirmation is asked there and never again as a question', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-noquestion', 'C:/work/coord')
+  stubStation(on)
+  const asked: any[] = []
+  on('tool.call', { tool: 'AskUserQuestion' }, (_$: any, e: any) => { asked.push(e); return { result: { text: 'Allow' } } as any })
+  const published: any[] = []
+  on('tool.call', { tool: 'Artifact' }, (_$: any, e: any) => { published.push(e); return { result: { text: 'Published' } } as any })
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(30_000)
+
+  await $.tool.call({ tool: 'Artifact', url: OFFICE, file_path: 'C:/office.html' } as any)
+
+  expect(asked.length).toBe(0)
+  expect(published.length).toBe(1)
+})
+
+test('a compaction, seen as fewer prompts in the session, sends the map again', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-turns', 'C:/work/app')
+  stubStation(on)
+  const turns = [1, 2, 1]
+  on('session.turns' as any, () => ({ value: turns.shift() ?? 1 }))
+  on('prompt.submit' as any, (_$: any, e: any) => ({ text: e.text, context: e.context }))
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(30_000)
+  const first: any = await ($ as any).prompt.submit({ text: 'hello' })
+  const second: any = await ($ as any).prompt.submit({ text: 'go on' })
+  const afterCompaction: any = await ($ as any).prompt.submit({ text: 'and now' })
+
+  expect(String((first.context ?? []).join('\n'))).toContain('propose_order')
+  expect(String((second.context ?? []).join('\n'))).not.toContain('propose_order')
+  expect(String((afterCompaction.context ?? []).join('\n'))).toContain('propose_order')
+})
+
+test('the end of the session marks its report ended', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-end', 'C:/work/app')
+  const written: any[] = []
+  stubStation(on, e => {
+    if (e.collection === 'sessions' && (e.action === 'set' || e.action === 'update')) written.push(e.data)
+    return { result: { text: `The document is now at version ${written.length + 1}.` } }
+  })
+  on('session.end' as any, (_$: any, e: any) => ({ sessionId: e.sessionId }))
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(30_000)
+  await ($ as any).session.end({ reason: 'prompt_input_exit', sessionId: 'test-session-end' })
+  await clock.advance(30_000)
+
+  expect(written.some(d => d.state === 'ended' && typeof d.endedAt === 'number')).toBe(true)
+})
+
+test('a /clear does not end the session', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-clear', 'C:/work/app')
+  const written: any[] = []
+  stubStation(on, e => {
+    if (e.collection === 'sessions' && (e.action === 'set' || e.action === 'update')) written.push(e.data)
+    return { result: { text: `The document is now at version ${written.length + 1}.` } }
+  })
+  on('session.end' as any, (_$: any, e: any) => ({ sessionId: e.sessionId }))
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(30_000)
+  await ($ as any).session.end({ reason: 'clear', sessionId: 'test-session-clear' })
+  await clock.advance(30_000)
+
+  expect(written.some(d => d.state === 'ended')).toBe(false)
+})
+
+test('a session whose row was deleted meanwhile writes it anew', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-reborn', 'C:/work/app')
+  let isDeleted = false
+  const writes: any[] = []
+  stubStation(on, e => {
+    if (e.collection !== 'sessions') return { result: { text: 'The document is now at version 1.' } }
+    if (e.action === 'get') return { result: { text: isDeleted ? `No document "${e.doc_id}" in collection "sessions".` : '0 documents' } }
+    writes.push(e)
+    if (isDeleted && e.if_version !== undefined) return { result: { text: `db write failed (not_found): sessions/${e.doc_id} does not exist.` } }
+    return { result: { text: `The document is now at version ${writes.length}.` } }
+  })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(30_000)
+  isDeleted = true
+  const before = writes.length
+  await $.tool.call({ tool: 'Read', file_path: 'C:/y.md' } as any)
+  await clock.advance(30_000)
+
+  const after = writes.slice(before)
+  expect(after.some(w => w.action === 'set' && w.if_version === undefined)).toBe(true)
+})
+
+test('the map tells a room that its handoffs are its repo\'s open issues, how to list them and how to mark one', async () => {
+  const station = stationFromConfig({
+    coordination: 'coord',
+    repos: [
+      { remote: 'github.com/acme/app-repo', folder: 'app' },
+      { remote: 'gitlab.com/group/*' },
+      { remote: 'github.com/acme/quiet', issues: false },
+      { remote: 'github.com/acme/coord' },
+    ],
+    departments: {},
+  })
+  const app = stationMap(station, 'app', 'mcp__agent-station__propose_order')
+  expect(app).toContain("Your room's handoffs are the open issues of its repo, `github.com/acme/app-repo`")
+  expect(app).toContain('`gh issue list --repo acme/app-repo`')
+  expect(app).toContain('gh issue edit <n> --repo acme/app-repo --add-label "in progress"')
+  const shop = stationMap(station, 'shop', 'mcp__agent-station__propose_order')
+  expect(shop).toContain('`glab issue list -R https://gitlab.com/group/shop`')
+  expect(stationMap(station, 'quiet', 'mcp__agent-station__propose_order')).not.toContain("Your room's handoffs")
+  expect(stationMap(station, 'coord', 'mcp__agent-station__propose_order')).not.toContain("Your room's handoffs")
+  const es = stationMap(stationFromConfig({ language: 'es', repos: [{ remote: 'github.com/acme/app-repo', folder: 'app' }], departments: {} }), 'app', 'mcp__agent-station__propose_order')
+  expect(es).toContain('Los encargos de tu sala son las issues abiertas de su repo, `github.com/acme/app-repo`')
+  expect(es).toContain('márcalo en curso (`<n>` es su número)')
+})
+
+test('a subagent finishing its turn leaves the session working; the session finishing leaves it idle', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-subturn', 'C:/work/app')
+  const written: any[] = []
+  stubStation(on, e => {
+    if (e.collection === 'sessions' && e.action === 'set') written.push(e.data)
+    return { result: { text: `The document is now at version ${written.length + 1}.` } }
+  })
+  on('turn.complete' as any, (_$: any, e: any) => ({ text: e.answer ?? '' }))
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(30_000)
+  await ($ as any).turn.complete({ answer: '', durationMs: 5, isAborted: false, turnId: 'sub-1', agentId: 'agent-1', reason: 'answer' })
+  await clock.advance(30_000)
+  expect(written.at(-1)?.state).toBe('working')
+
+  await ($ as any).turn.complete({ answer: 'done', durationMs: 5, isAborted: false, turnId: 'main-1', reason: 'answer' })
+  await clock.advance(30_000)
+  expect(written.at(-1)?.state).toBe('idle')
 })

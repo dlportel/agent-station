@@ -86,6 +86,11 @@ const ES: Record<string, string> = {
   'This agent wants to write to another Claude Code session directly, outside the station. Work between rooms goes through propose_order, which waits for your approval in the station: allow this only if you asked for it.':
     'Este agente quiere escribir directamente a otra sesión de Claude Code, fuera de la estación. El trabajo entre salas pasa por propose_order, que espera tu aprobación en la estación: permítelo solo si se lo has pedido tú.',
   'The coordination session wants to republish the station page ({url}).': 'La sesión de coordinación quiere republicar la página de la estación ({url}).',
+  'Allow it?': '¿Lo permites?',
+  'Allow': 'Permitir',
+  'Deny': 'Denegar',
+  'Station': 'Estación',
+  'The user did not allow it.': 'El usuario no lo ha permitido.',
   'The coordination session wants to delete the station page ({url}).': 'La sesión de coordinación quiere borrar la página de la estación ({url}).',
   'The coordination session wants to write to the station ({target}).': 'La sesión de coordinación quiere escribir en la estación ({target}).',
   '(data from the file {file})': '(datos del fichero {file})',
@@ -101,6 +106,10 @@ const ES: Record<string, string> = {
   '{rooms} are on hosts without handoffs: ask them for work only with `{tool}`.': '{rooms} están en servidores sin encargos: pídeles trabajo solo con `{tool}`.',
   'If the command fails because `gh` or `glab` is not installed or has no login, do not look for another way, and never write a token in a command, file, log or message: tell the user what is missing, and meanwhile ask for the work with `{tool}`, with all its context.':
     'Si la orden falla porque `gh` o `glab` no están instalados o no tienen login, no busques otra forma, y no escribas nunca un token en una orden, un fichero, un log ni un mensaje: dile al usuario qué falta y, mientras tanto, pide el trabajo con `{tool}`, con todo su contexto.',
+  'Your room\'s handoffs are the open issues of its repo, `{repo}`: when the user speaks of handoffs, pending handoffs or the station\'s tasks, those issues are what they mean. To see them: `{list}`.':
+    'Los encargos de tu sala son las issues abiertas de su repo, `{repo}`: cuando el usuario habla de encargos, encargos pendientes o tareas de la estación, se refiere a esas issues. Para verlas: `{list}`.',
+  'A handoff is in progress when it has the label `in progress` or someone assigned to it; the others are waiting. Before you start one that no station order gave you, mark it in progress (`<n>` is its number): `{mark}`.':
+    'Un encargo está en curso si tiene la etiqueta `in progress` o alguien asignado; los demás están esperando. Antes de empezar uno que no te haya llegado con una orden de la estación, márcalo en curso (`<n>` es su número): `{mark}`.',
   'Its repo is on {host}, which has no handoffs: only GitHub and GitLab do. Orders reach it as usual.':
     'Su repo está en {host}, que no tiene encargos: solo los tienen GitHub y GitLab. Las órdenes le llegan igual.',
   "`{tool}` is not installed on {machine}, so this room's handoffs are not read. Install it, log in and reload the coordination session.":
@@ -127,12 +136,26 @@ const ES: Record<string, string> = {
   'There is no local branch `{base}` in this repo: use `origin/{base}` in its place, after `git fetch origin {base}`; if git does not find that either, ask the user.':
     'En este repo no hay una rama local `{base}`: usa `origin/{base}` en su lugar, después de `git fetch origin {base}`; si git tampoco la encuentra, pregunta al usuario.',
   // the keeper of the dispatcher
+  'auto mode refuses its command': 'el modo auto rechaza su comando',
+  'Agent station: KEEP AWAKE cannot start its command, because auto mode refuses it. Run this coordination session with permissions bypassed for it to work. It keeps trying every ten minutes.':
+    'Estación de agentes: MANTENER DESPIERTO no puede lanzar su comando porque el modo auto lo rechaza. Para que funcione, pon esta sesión de coordinación en omitir permisos. Lo sigue intentando cada diez minutos.',
+  'Agent station: KEEP AWAKE cannot start its command ({error}). It keeps trying every ten minutes.':
+    'Estación de agentes: MANTENER DESPIERTO no puede lanzar su comando ({error}). Lo sigue intentando cada diez minutos.',
+  'station: KEEP AWAKE does not start ({problem})': 'estación: MANTENER DESPIERTO no arranca ({problem})',
+  'Agent station: this session reaches the station again.': 'Estación de agentes: esta sesión vuelve a conectar con la estación.',
+  'Agent station: this session cannot reach the station ({error}), so the station does not show what it does. It keeps trying; the status line says so until it reconnects.':
+    'Estación de agentes: esta sesión no puede conectar con la estación ({error}), así que la estación no muestra lo que hace. Lo sigue intentando; la barra de estado lo indica hasta que vuelva a conectar.',
+  'Agent station: the order for {room} was not delivered: {note}': 'Estación de agentes: la orden para {room} no se pudo entregar: {note}',
+  'no reason given': 'sin motivo',
+  'Agent station: this coordination session runs in the {mode} permission mode. The station works fully only with permissions bypassed; in auto mode, KEEP AWAKE cannot start.':
+    'Estación de agentes: esta sesión de coordinación está en el modo de permisos {mode}. La estación solo funciona del todo con omitir permisos; en modo auto, MANTENER DESPIERTO no puede arrancar.',
   'Keep the station dispatcher awake': 'Mantener despierto el despachador de la estación',
   // a session that cannot join its station yet
   'Agent station: this session could not join its station yet ({reason}). It keeps trying; if it does not join, run /reload-plugins.':
     'Estación de agentes: esta sesión aún no se ha podido unir a su estación ({reason}). Lo sigue intentando; si no lo consigue, ejecuta /reload-plugins.',
   'git could not read the remote of its repo': 'git no pudo leer el remote de su repo',
-  'the station {url} does not answer': 'la estación {url} no contesta',
+  'the station {url} could not be read: {error}': 'no se pudo leer la estación {url}: {error}',
+  'no answer': 'no contesta',
   'it could not be checked': 'no se pudo comprobar',
 }
 

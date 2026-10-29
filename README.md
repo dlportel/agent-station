@@ -38,8 +38,8 @@ page with sample data, nothing to install ([in Spanish](https://dlportel.github.
 - **Orders from one place.** Send work to a repo yourself: to a free session, a particular one, or
   a new one, with the model you choose. One session per machine, the coordination session,
   delivers every approved order.
-- **Each room's pending work.** The open issues of every room's repo, on GitHub or GitLab, show on
-  its board as handoffs. One click turns a handoff into an order for that room, and every agent
+- **Each room's pending work.** The open issues of every room's repo, on GitHub or GitLab, are
+  counted on its board as handoffs. One click turns a handoff into an order for that room, and every agent
   knows the command that opens an issue in another room's repo.
 - **A station you shape.** Rooms, decks, colours, furniture, robot silhouettes and accessories are
   set in the page's configuration panel. The station speaks English or Spanish, and its scenery
@@ -73,6 +73,8 @@ else.
   session tools. For the same reason, on Linux sessions report and propose orders but nothing can
   deliver them.
 - A claude.ai account that can publish artifacts with a database.
+- The coordination session with permissions bypassed (`bypassPermissions`), if you can: that is the
+  mode in which every feature works. See *Permission modes* below.
 - Your repos cloned side by side, in one folder: the dispatcher finds a station's repos next to
   the coordination repo.
 - Optionally, for handoffs (the open issues of each room's repo, which the station shows as the
@@ -152,19 +154,29 @@ click.
 
 **Proposals.** An agent that needs another room's work proposes an order with `propose_order`. The
 proposal shows on the bridge with why it is asked, who asks and where it would go; you approve it,
-reject it, or edit its text first. When a room answers an order it received, its answer goes back
+reject it, or open it with SEE AND EDIT, which shows its text ready to change before you approve it,
+with its starting branch and its destination (folded on one line until you change it): as it was
+proposed, or any other, a particular session included. When a room answers an order it received, its answer goes back
 to the very session that asked. The coordination session only hands orders out: agents never ask
 it to forward anything.
 
 **Handoffs.** The dispatcher reads the open issues of each room's repo every fifteen minutes and
-the room's board shows them. **ASSIGN TO AN AGENT**, on a handoff, opens the order form filled in
-to handle that issue. A repo whose issues you do not want on the station is set to NO under ISSUES
+the room's board shows how many there are; a click on it opens them. **ASSIGN TO AN AGENT**, on a handoff, opens the order form filled in
+to handle that issue: the agent first marks it in progress, with the label `in progress` on the
+issue (the command for its host comes in the order), so it shows so on GitHub or GitLab too. A repo whose issues you do not want on the station is set to NO under ISSUES
 in CONFIGURE. When a room's issues cannot be read (no `gh` or `glab`, or no login), its board says
-why and on which machine. The bridge lists the five newest of each room; SEE THEM ALL, or the `+N`
-on a board, opens every open handoff with a text search, a filter by room and pages of fifteen.
+why and on which machine. The bridge lists the five newest of each room; SEE THEM ALL, or a room's
+board, opens every open handoff with a text search, a filter by room and pages of fifteen.
 The dispatcher reads the 100 newest open issues of each repo; a room that reaches that shows `100+`.
+Each handoff shows whether it is OPEN or IN PROGRESS: in progress when the station gave an order
+for it (ASSIGN TO AN AGENT) that is on its way or delivered, when its issue has a label such as
+`in progress`, `doing`, `wip` or `en curso`, or when it is assigned to someone; its tooltip and its
+detail say which. The full list filters by that state too.
+↻ UPDATE, in OPEN HANDOFFS and in the full list, asks the dispatcher to read them now instead of
+waiting for its fifteen minutes; it does within a minute, and the button's tooltip says when they
+were last read.
 
-**All orders.** RECENT ORDERS on the bridge shows the last six; SEE ALL opens every order the
+**All orders.** RECENT ORDERS on the bridge shows the last six, and folds (▾) down to SEE ALL alone; SEE ALL opens every order the
 station keeps (the last 30 days), newest first, with a text search over the order, its reason, its
 room and the session that got it, a filter by state and pages of fifteen. An order opened from the
 list has a way back to the same page.
@@ -202,14 +214,15 @@ configuration panel:
 | `language` | `en` (the default) or `es`: the language of the page, of the map each session gets, of the orders delivered and of the dispatcher's notes. What you write in the configuration (room names, places, deck labels, descriptions) is shown as written. |
 | `theme` | The scenery: `space`, the default, or a theme of your own (see *Themes*). |
 | `coordination` | The repo whose sessions coordinate the station. |
-| `keepAwake` | `true` keeps the coordination session from being stopped while it is idle, so orders are delivered at any hour (KEEP AWAKE in the panel). Off by default. |
+| `keepAwake` | `true` keeps the coordination session from being stopped while it is idle, so orders are delivered at any hour (KEEP AWAKE in the panel). Off by default. It works only with the coordination session in bypass-permissions mode; the station says so when it is in another. |
 | `repos` | The station's repos by origin remote: `{ "remote": "github.com/org/repo", "folder": "room" }`, or a remote ending in `/*` for every repo of a group. `"issues": false` leaves a repo's (or a group's) issues off the station. |
 | `departments` | Each room: `name`, `description` (what its agent does, which the other agents read), `place`, `accent`, `wall`, `floor`, `furniture`, `accessory`, `body`, `antenna`, `weight`. |
 | `layout` | The decks: `{ "label": "DECK", "items": ["room", "#canteen", "#hangar"] }`. `#canteen` and `#hangar` are shared rooms where idle robots rest and recharge; one on no deck shows after the decks. |
-| `offStation` | Shared rooms taken off the station, such as `["#canteen"]`. Every station has both unless this lists them. |
+| `offStation` | Shared rooms taken off the station, such as `["#canteen"]`. Every station has both unless this lists them. Their deck, and their name, the line under it, their colours and floor (SETTINGS), are set from their rows under SHARED ROOMS in DECKS (`departments["#canteen"]` and `departments["#hangar"]`). |
 | `aliases` | Other URLs of the same artifact. |
 
-The panel edits all of it: the title, the theme, the language and the coordination; one row per
+The panel has four tabs. GENERAL, REPOS and DECKS edit the station; VIEW sets how this browser draws
+it (the station's, the bridge's and the dialogs' sizes, the light, the legend), kept in this browser alone. They edit all of it: the title, the theme, the language and the coordination; one row per
 repo with its room's name and deck; each room's look in a side panel with a live preview; and the
 decks themselves. The page reads a malformed configuration without breaking, so the panel is also
 the way to repair one. When a `seed.json` is published next to the page, an empty station can start
@@ -285,6 +298,29 @@ its theme straight from this repo, so it shows every change to `main` on its own
 `demo/data.js`, which stands in for the station's database, is separate: after changing how the
 page reads or writes its data, open the demo locally (serve the repo, for example with
 `python -m http.server`, and open `/demo/`) and try what changed.
+
+## Permission modes
+
+The plugin approves its own calls, its writes to the station and the background command of KEEP
+AWAKE, so they never ask you. On an account of a Team or Enterprise organization, and on a machine
+with managed settings, Claude Code's built-in security plugin answers permission decisions and the
+plugin's other built-in hooks first, and the plugin's are skipped; the app says so with a notice
+such as "its classic.PreToolUse hook was skipped". What that means for the station depends on the
+session's mode:
+
+| Mode | What works |
+|---|---|
+| Bypass permissions | Everything. This is the mode the coordination session should run in. |
+| Auto | Orders, reports, proposals and the dispatcher, but not KEEP AWAKE. The plugin's own calls go to the auto-mode classifier, which refuses calls no request asked for: KEEP AWAKE cannot start its command, and now and then a report to the station is refused and sent again later. The rule `"ArtifactData"` in `permissions.allow` of `~/.claude/settings.json` lets the reports through, but it also lets any agent write to any artifact's database without asking (the plugin still refuses agents' writes to a station). There is no safe rule for KEEP AWAKE's command. |
+| Default | The same, but every call of the plugin asks you, so it is not practical for a station session. |
+
+Where the built-in plugin goes first, the plugin notices that its hooks are skipped and works
+around what it can. Its extra confirmations (an agent writing to another session directly, the
+coordination session writing to the station or republishing its page) come as a question with
+Allow and Deny instead of inside the permission dialog. A robot waiting for your permission is
+marked from the session's own permission rules in the default, accept-edits and plan modes; in auto
+mode it shows as working. An input dialog an MCP server opens shows as working in every mode.
+A coordination session that starts in another mode than bypass says so once, in a notice.
 
 ## Known limitations
 
