@@ -10,6 +10,18 @@ import { tx } from './locale-es'
 // issues: false leaves the repo's issues out of the station's boards.
 export type RepoRule = { remote: string; folder?: string; issues?: boolean }
 
+// A room whose agents work in a folder that is no git repo. It has no remote
+// to be known by, so the folder carries a mark (MARK_FILE) with the room's id,
+// which the station drew at random when the room was added: only a folder with
+// that mark is the room, whatever its name. The mark the coordination session
+// writes also names the station's URL, and then only that station takes it;
+// the one shown on the page, which cannot tell its own address, has the id alone. In the
+// stored list of repos it is the entry with `local` (its id) and no remote.
+export type FolderRoom = { id: string; folder: string }
+export const MARK_FILE = '.agent-station'
+const FOLDER_ROOM_ID = /^[0-9a-f]{32}$/
+export const isFolderName = (name: unknown): name is string => typeof name === 'string' && /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/.test(name)
+
 // What an agent is told about a room: its name and what its agent does.
 export type RoomInfo = { name?: string; description?: string }
 
@@ -25,6 +37,7 @@ export type StationConfig = {
   language: Lang
   coordination: string
   repos: RepoRule[]
+  folderRooms: FolderRoom[]
   rooms: Record<string, RoomInfo>
   // The station artifact's ids: its URL and the aliases in config/departments
   // (the same artifact also answers at claude.ai/code/artifact/<uuid>).
@@ -71,9 +84,69 @@ export function stationFromConfig(config: Record<string, any>, officeUrl: string
     language: langOf(config.language),
     coordination: typeof config.coordination === 'string' ? config.coordination : '',
     repos: Array.isArray(config.repos) ? config.repos.filter((r: any) => r && typeof r.remote === 'string') : [],
+    // A folder room never takes the folder of a repo's room: the repo keeps it.
+    folderRooms: folderRoomsOf(config.repos).filter(room => !(Array.isArray(config.repos) ? config.repos : [])
+      .some((rule: any) => rule && typeof rule.remote === 'string' && (rule.folder || normalizeRemote(rule.remote).split('/').pop()) === room.folder)),
     rooms: roomsOf(config.departments),
     officeKeys: new Set([officeUrl, ...aliases].map(artifactKey).filter((key): key is string => !!key)),
   }
+}
+
+// The folder rooms of the stored list: an entry with no remote, a valid id and
+// a folder name. The first entry of an id or a folder wins, as for repos.
+export function folderRoomsOf(repos: unknown): FolderRoom[] {
+  const rooms: FolderRoom[] = []
+  for (const entry of Array.isArray(repos) ? repos : []) {
+    if (!entry || typeof entry !== 'object' || typeof entry.remote === 'string') continue
+    const id = String(entry.local ?? '').toLowerCase()
+    if (!FOLDER_ROOM_ID.test(id) || !isFolderName(entry.folder)) continue
+    if (rooms.some(room => room.id === id || room.folder === entry.folder)) continue
+    rooms.push({ id, folder: entry.folder })
+  }
+  return rooms
+}
+
+// The text of a folder room's mark.
+export function folderMarkText(officeUrl: string, id: string): string {
+  return `${JSON.stringify({ station: officeUrl, room: id }, null, 2)}\n`
+}
+
+// The mark in a folder, or undefined when it has none or it cannot be read.
+export async function readFolderMarkAt(io: EngineIo, dir: string): Promise<{ station: string; room: string } | undefined> {
+  try {
+    const mark = JSON.parse(await io.readText(joinPath(dir, MARK_FILE)))
+    const station = typeof mark?.station === 'string' ? mark.station : ''
+    const room = typeof mark?.room === 'string' ? mark.room.toLowerCase() : ''
+    // A station that is there but is no station URL makes the mark worthless.
+    return FOLDER_ROOM_ID.test(room) && (!station || artifactKey(station)) ? { station, room } : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// The nearest mark from a session's folder up, so a session opened in a
+// subfolder of a folder room is in that room too.
+const MARK_LOOKUP_DEPTH = 12
+export async function readFolderMark(io: EngineIo, cwd: string): Promise<{ station: string; room: string; dir: string } | undefined> {
+  let dir = toLocalPath(cwd)
+  for (let depth = 0; depth < MARK_LOOKUP_DEPTH && dir; depth++) {
+    const mark = await readFolderMarkAt(io, dir)
+    if (mark) return { ...mark, dir }
+    const parent = parentOf(dir)
+    if (!parent || parent === dir) break
+    dir = parent
+  }
+  return undefined
+}
+
+// The room a mark names in a station: only one of its own folder rooms, and,
+// when the mark names a station, only when it is this one.
+export function folderForMark(mark: { station: string; room: string }, station: Station): string | undefined {
+  if (mark.station) {
+    const key = artifactKey(mark.station)
+    if (!key || !station.officeKeys.has(key)) return undefined
+  }
+  return station.folderRooms.find(room => room.id === mark.room)?.folder
 }
 
 function roomsOf(departments: unknown): Record<string, RoomInfo> {
@@ -95,7 +168,8 @@ function roomsOf(departments: unknown): Record<string, RoomInfo> {
 export function stationRooms(station: Station): { rooms: Array<{ folder: string; name: string }>; groups: string[] } {
   const folders = [...new Set(station.repos
     .filter(rule => !normalizeRemote(rule.remote).endsWith('/*'))
-    .map(rule => rule.folder || normalizeRemote(rule.remote).split('/').pop() || ''))]
+    .map(rule => rule.folder || normalizeRemote(rule.remote).split('/').pop() || '')
+    .concat(station.folderRooms.map(room => room.folder)))]
     .filter(folder => folder && folder !== station.coordination)
   return {
     rooms: folders.map(folder => ({ folder, name: station.rooms[folder]?.name || folder })),
@@ -140,7 +214,9 @@ export function stationMap(station: Station, ownFolder: string, proposeTool: str
     '',
     say('The same tool returns the result of an order you received from another room: set `folder` to the room that asked, and the station delivers it to the session that sent it, without you naming it.'),
     '',
-    say("Never write to another room's sessions directly (with SendMessage or a session tool): work between rooms goes only through `{tool}`, so that the user approves it.", { tool: proposeTool }),
+    say('To ask another session of your own room, use the same tool with your own folder: the station gives the order to another session of the room, never back to you.'),
+    '',
+    say("Never write to another session directly (with SendMessage or a session tool), not even to one of your own room: work between sessions goes only through `{tool}`, so that the user approves it and the station shows it.", { tool: proposeTool }),
   )
   lines.push('', say("A new session that an order opens may work in a git worktree of its repo (a folder under `.claude/worktrees`), on a branch of its own: the order's message says from which branch to start."))
   lines.push(...handoffLines(station, proposeTool))
@@ -166,13 +242,16 @@ function handoffLines(station: Station, proposeTool: string): string[] {
     if (repo?.kind) commands.push(`- ${label}: \`${issueCommand(repo.kind, repo.host, repo.path, 'create')}\``)
     else without.push(label)
   }
-  if (!commands.length) return without.length ? ['', say('The repos of this station are on hosts without handoffs: ask the rooms for work only with `{tool}`.', { tool: proposeTool })] : []
+  const folders = station.folderRooms.map(room => room.folder).filter(folder => folder !== station.coordination).map(folder => `\`${folder}\``)
+  const folderLine = folders.length ? [say('{rooms} work in a folder with no repo, so they have no handoffs: ask them for work only with `{tool}`.', { rooms: folders.join(', '), tool: proposeTool })] : []
+  if (!commands.length) return without.length ? ['', say('The repos of this station are on hosts without handoffs: ask the rooms for work only with `{tool}`.', { tool: proposeTool }), ...folderLine] : folderLine.length ? ['', ...folderLine] : []
   const lines = [
     '',
     say('Work that has to be followed up, or that may take a while, goes in a handoff: an issue in the repo of the room that has to do it. The station shows every open issue of a room\'s repo as its handoffs; add the labels your project uses to say who asks, if it has them. If it is urgent, also propose an order with `{tool}` that links the issue. To open it, use the command of that room\'s repo:', { tool: proposeTool }),
     ...commands,
   ]
   if (without.length) lines.push(say('{rooms} are on hosts without handoffs: ask them for work only with `{tool}`.', { rooms: without.join(', '), tool: proposeTool }))
+  lines.push(...folderLine)
   lines.push(
     say('If the command fails because `gh` or `glab` is not installed or has no login, do not look for another way, and never write a token in a command, file, log or message: tell the user what is missing, and meanwhile ask for the work with `{tool}`, with all its context.', { tool: proposeTool }),
   )
@@ -180,13 +259,15 @@ function handoffLines(station: Station, proposeTool: string): string[] {
 }
 
 // What "handoffs" means for this session's own room, so that "the pending
-// handoffs" is read as the open issues of its repo: how to list them, when one
-// is in progress, and how to mark one it starts without a station order. None
+// handoffs" is read as the open issues of its repo: how to list them, their
+// states, and how to move one it starts without a station order. None
 // for a room whose repo is on a host without issues, or whose issues the
 // station does not show.
 function ownHandoffLines(station: Station, ownFolder: string): string[] {
   const say = (text: string, vars?: Record<string, unknown>) => tx(station.language, text, vars)
   if (!ownFolder || ownFolder === station.coordination) return []
+  // A folder room has no repo, even when a group (…/*) could take its name.
+  if (station.folderRooms.some(room => room.folder === ownFolder)) return []
   let rule: RepoRule | undefined, remote = ''
   for (const candidate of station.repos) {
     const normalized = normalizeRemote(candidate.remote)
@@ -203,7 +284,8 @@ function ownHandoffLines(station: Station, ownFolder: string): string[] {
   return [
     '',
     say('Your room\'s handoffs are the open issues of its repo, `{repo}`: when the user speaks of handoffs, pending handoffs or the station\'s tasks, those issues are what they mean. To see them: `{list}`.', { repo: remote, list: issueCommand(repo.kind, repo.host, repo.path, 'list') }),
-    say('A handoff is in progress when it has the label `in progress` or someone assigned to it; the others are waiting. Before you start one that no station order gave you, mark it in progress (`<n>` is its number): `{mark}`.', { mark: issueCommand(repo.kind, repo.host, repo.path, 'progress') }),
+    say('A handoff\'s state is its label, one at most: `To Do` (waiting, as a new issue starts) or `Doing` (someone or a session works on it). One with `Doing` or someone assigned is taken: do not start it. Before you start one that no station order gave you, mark it `Doing` (`<n>` is its number): `{mark}`.', { mark: issueCommand(repo.kind, repo.host, repo.path, 'progress') }),
+    say("When its work is done, remove `Doing` and finish it as your project's own instructions say: with a label of their own for work that waits to reach production, or by closing the issue with the commit or the pull or merge request that solves it."),
   ]
 }
 
@@ -301,27 +383,33 @@ export function issueRepoOf(remote: string): { host: string; path: string; kind?
   return { host, path, kind }
 }
 
+// A handoff's state while it is open, the same in every station: To Do (no
+// one on it, as a new issue starts) or Doing (someone or a session works on
+// it). What comes once its work is done (a label of the team's own, or
+// closing it) is for each project's own instructions, not the station's.
+export const STATE_LABELS = { todo: 'To Do', doing: 'Doing' } as const
+
 // The command that opens or reads a handoff issue in a repo, for the map and
 // the page. glab takes the repo as a full URL, which also works for a GitLab
-// of its own.
-// progress marks an issue as being worked on with the label "in progress",
-// which the station reads: on GitHub the label is created first (--force
-// leaves one that exists as it is), GitLab creates it when it is added.
+// of its own. progress moves an issue from To Do to Doing. GitLab creates a
+// label the first time it is added; on GitHub the dispatcher creates the ones
+// a repo lacks.
 export function issueCommand(kind: IssueKind, host: string, path: string, verb: 'create' | 'view' | 'list' | 'progress'): string {
+  const { todo, doing } = STATE_LABELS
   if (kind === 'github') {
     return {
-      create: `gh issue create --repo ${path} --title "…" --body "…"`,
+      create: `gh issue create --repo ${path} --title "…" --body "…" --label "${todo}"`,
       view: `gh issue view <n> --repo ${path}`,
       list: `gh issue list --repo ${path}`,
-      progress: `gh label create "in progress" --force --repo ${path} && gh issue edit <n> --repo ${path} --add-label "in progress"`,
+      progress: `gh issue edit <n> --repo ${path} --add-label "${doing}" --remove-label "${todo}"`,
     }[verb]
   }
   const repo = `https://${host}/${path}`
   return {
-    create: `glab issue create -R ${repo} --title "…" --description "…"`,
+    create: `glab issue create -R ${repo} --title "…" --description "…" --label "${todo}"`,
     view: `glab issue view <n> -R ${repo}`,
     list: `glab issue list -R ${repo}`,
-    progress: `glab issue update <n> -R ${repo} --label "in progress"`,
+    progress: `glab issue update <n> -R ${repo} --label "${doing}" --unlabel "${todo}"`,
   }[verb]
 }
 

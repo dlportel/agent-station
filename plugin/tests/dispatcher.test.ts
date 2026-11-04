@@ -183,6 +183,26 @@ test('an order from another room says who asked and that the result goes back wi
   await clock.advance(60_000)
 })
 
+test('an order to its own room goes to another session of the room, never back to the one that asked', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls, [{ sessionId: 'local_app', isArchived: false }, { sessionId: 'local_app2', isArchived: false }])
+  stubGit(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('sessions', 'local_app', { folder: 'app', machine: 'TESTPC', state: 'idle', lastEventAt: Date.now() + 1000, title: 'Impact analysis' })
+  db.seed('sessions', 'local_app2', { folder: 'app', machine: 'TESTPC', state: 'idle', lastEventAt: Date.now(), title: 'Release' })
+  db.seed('orders', 'p3', { text: 'Rebase onto main', folder: 'app', mode: 'any', status: 'pending', createdAt: Date.now(), proposedBy: { sessionId: 'local_app', title: 'Impact analysis', folder: 'app' } })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  const sent = mcpCalls.filter(c => c.tool === 'send_message')
+  expect(sent.map(c => c.args?.session_id)).toEqual(['local_app2'])
+  expect(String(sent[0].args?.message)).toContain('Order from another session of this same room, its session "Impact analysis"')
+  expect(String(sent[0].args?.message)).toContain('`folder: "app"`')
+  await clock.advance(60_000)
+})
+
 test('a reply to an order this session sent is not answered with another order', { options }, async ($, on) => {
   const clock = mock.clock(on)
   const mcpCalls: any[] = []
@@ -749,7 +769,7 @@ test('handoffs of a GitLab repo are read with glab, and a repo on another host g
   expect(handoffs?.byFolder?.app?.[0]).toEqual({ number: 7, title: 'Add the delta endpoint', url: 'https://gitlab.com/acme/app/-/work_items/7', from: 'legal', labels: [], progressLabel: 'doing', assignees: ['ana'], createdAt: '2026-10-16T10:00:00Z', excerpt: `The app needs a delta endpoint. ${'x'.repeat(247)}…` })
   expect(handoffs?.views?.app).toBe('glab issue view <n> -R https://gitlab.com/acme/app')
   // The command that marks an issue in progress, for the orders that hand it to an agent.
-  expect(handoffs?.marks?.app).toBe('glab issue update <n> -R https://gitlab.com/acme/app --label "in progress"')
+  expect(handoffs?.marks?.app).toBe('glab issue update <n> -R https://gitlab.com/acme/app --label "Doing" --unlabel "To Do"')
   expect(String(handoffs?.problems?.legal)).toContain('bitbucket.org, which has no handoffs')
   expect(handoffs?.problems?.app).toBeUndefined()
   await clock.advance(60_000)
@@ -760,7 +780,7 @@ test('every open issue is read, except those of a repo set to issues false and o
   stubEngine(on, [])
   const listed: string[] = []
   stubGit(on, argv => {
-    if (argv.includes('list')) listed.push(argv[argv.indexOf('--repo') + 1])
+    if (argv[1] === 'issue' && argv.includes('list')) listed.push(argv[argv.indexOf('--repo') + 1])
     return argv.includes('acme/app-repo')
       ? { exitCode: 0, stdout: JSON.stringify([{ number: 3, title: 'Crash on login', url: 'u3', createdAt: 'x', labels: [{ name: 'bug' }] }]) }
       : { exitCode: 0, stdout: '[]' }
@@ -1126,26 +1146,41 @@ test('the page asking to read the handoffs now has the dispatcher read them with
   expect(reads).toBe(afterAsk)
 })
 
-test('a handoff keeps who it is assigned to and its in-progress label', { options }, async ($, on) => {
+test('a handoff keeps who it is assigned to and its state labels', { options }, async ($, on) => {
   const clock = mock.clock(on)
   stubEngine(on, [])
-  stubGit(on, argv => argv.includes('acme/app-repo')
-    ? { exitCode: 0, stdout: JSON.stringify([
-      { number: 4, title: 'Doing it', url: 'u4', createdAt: 'x', labels: [{ name: 'bug' }, { name: 'In Progress' }], assignees: [{ login: 'amn' }] },
-      { number: 5, title: 'Waiting', url: 'u5', createdAt: 'x', labels: [{ name: 'progress-report' }], assignees: [] },
-    ]) }
-    : { exitCode: 0, stdout: '[]' })
+  const created: string[] = []
+  stubGit(on, argv => {
+    if (argv[1] === 'label' && argv[2] === 'list') return { exitCode: 0, stdout: JSON.stringify([{ name: 'bug' }, { name: 'to do' }]) }
+    if (argv[1] === 'label' && argv[2] === 'create') { created.push(`${argv[argv.indexOf('--repo') + 1]}: ${argv[3]} ${argv[argv.indexOf('--color') + 1]}`); return { exitCode: 0, stdout: '' } }
+    return argv.includes('acme/app-repo')
+      ? { exitCode: 0, stdout: JSON.stringify([
+        { number: 4, title: 'Doing it', url: 'u4', createdAt: 'x', labels: [{ name: 'bug' }, { name: 'In Progress' }], assignees: [{ login: 'amn' }] },
+        { number: 5, title: 'Waiting', url: 'u5', createdAt: 'x', labels: [{ name: 'progress-report' }, { name: 'To Do' }], assignees: [] },
+        { number: 6, title: 'Merged', url: 'u6', createdAt: 'x', labels: [{ name: 'Pending production' }], assignees: [{ login: 'amn' }] },
+      ]) }
+      : { exitCode: 0, stdout: '[]' }
+  })
   stubFolders(on)
   const db = fakeOfficeDatabase(on)
 
   await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
   await clock.advance(5_000)
 
-  const [doing, waiting] = db.read('config', 'handoffs')?.byFolder?.app ?? []
+  const [doing, waiting, merged] = db.read('config', 'handoffs')?.byFolder?.app ?? []
   expect(doing?.progressLabel).toBe('In Progress')
   expect(doing?.assignees).toEqual(['amn'])
-  expect(db.read('config', 'handoffs')?.marks?.app).toBe('gh label create "in progress" --force --repo acme/app-repo && gh issue edit <n> --repo acme/app-repo --add-label "in progress"')
+  expect(db.read('config', 'handoffs')?.marks?.app).toBe('gh issue edit <n> --repo acme/app-repo --add-label "Doing" --remove-label "To Do"')
   expect(doing?.labels).toEqual(['bug'])
+  expect(waiting?.labels).toEqual(['progress-report'])
+  // A label for what comes after is the project's own, and shows as one more label.
+  expect(merged?.labels).toEqual(['Pending production'])
+  expect(merged?.progressLabel).toBe('')
+  // Each repo lacked Doing: the dispatcher made it once, and left "to do" as it was.
+  expect(created).toEqual(['acme/app-repo: Doing 0E8A16', 'acme/legal: Doing 0E8A16'])
+  await $.tool.call({ tool: 'Read', file_path: 'C:/y.md' } as any)
+  await clock.advance(16 * 60_000)
+  expect(created.length).toBe(2)
   expect(waiting?.progressLabel).toBe('')
   expect(waiting?.assignees).toEqual([])
   expect(waiting?.labels).toEqual(['progress-report'])
@@ -1325,5 +1360,369 @@ test('the coordination session gets find_repos, which says what it found and wha
   expect(text).toContain('Rooms found: app (')
   expect(text).toContain('legal (')
   expect(text).not.toContain('coord (')
+  await clock.advance(60_000)
+})
+
+// A folder room, "books": a folder next to the coordination repo with no repo,
+// known by its mark.
+const BOOKS_ID = '0123456789abcdef0123456789abcdef'
+const FOLDER_STATION = { ...STATION, repos: [...STATION.repos, { folder: 'books', local: BOOKS_ID }] }
+function stubFolderRoomFiles(on: any, marks: Record<string, unknown>, written: Array<{ path: string; text: string }> = [], extra: string[] = []) {
+  on('fs.list' as any, (_$: any, e: any) => {
+    const path = String(e.path ?? e).replace(/\\/g, '/')
+    if (path === 'C:/work') return { value: ['app', 'coord', 'legal', 'books', ...extra].map(name => ({ name, kind: 'dir' })) }
+    throw new Error('no such directory')
+  })
+  on('fs.read' as any, (_$: any, e: any) => {
+    const path = String(e.path ?? e).replace(/\\/g, '/')
+    if (path in marks) return { value: JSON.stringify(marks[path]) }
+    throw new Error('no such file')
+  })
+  on('fs.write' as any, (_$: any, e: any) => {
+    const path = String(e.path ?? '').replace(/\\/g, '/')
+    // The plugin also writes its logs; only the marks count here.
+    if (!path.endsWith('/.agent-station')) return { value: null }
+    written.push({ path, text: String(e.text ?? e.content ?? '') })
+    marks[path] = JSON.parse(String(e.text ?? e.content ?? '{}'))
+    return { value: null }
+  })
+}
+
+test('a new-session order for a folder room opens its card in the marked folder, with no branch to start from', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls)
+  stubGit(on)
+  stubFolderRoomFiles(on, { 'C:/work/books/.agent-station': { station: OFFICE, room: BOOKS_ID } })
+  const db = fakeOfficeDatabase(on)
+  db.seed('config', 'departments', FOLDER_STATION)
+  db.seed('orders', 'f1', { text: 'Close the month', folder: 'books', mode: 'new', status: 'pending', createdAt: Date.now() })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  expect(db.read('orders', 'f1')?.status).toBe('needs_click')
+  const spawn = mcpCalls.find(c => c.tool === 'spawn_task')
+  expect(spawn?.args?.cwd).toBe('C:\\work\\books')
+  expect(String(spawn?.args?.prompt)).not.toContain('start from the branch')
+  expect(db.read('dispatchers', 'TESTPC')?.rooms).toContain('books')
+  await clock.advance(60_000)
+})
+
+test('a folder with no mark, or another station\'s, is no folder room', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls)
+  stubGit(on)
+  stubFolderRoomFiles(on, { 'C:/work/stray/.agent-station': { station: 'https://claude.ai/artifact/other-station', room: BOOKS_ID } }, [], ['stray'])
+  const db = fakeOfficeDatabase(on)
+  db.seed('config', 'departments', FOLDER_STATION)
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(15_000)
+
+  expect(db.read('dispatchers', 'TESTPC')?.rooms).toEqual(['app', 'legal'])
+  await clock.advance(60_000)
+})
+
+test('mark_folder_room writes the mark of a folder room, and refuses a repo or a folder marked for another room', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls)
+  stubGit(on)
+  const written: Array<{ path: string; text: string }> = []
+  const marks: Record<string, unknown> = { 'C:/work/taken/.agent-station': { station: OFFICE, room: 'ffffffffffffffffffffffffffffffff' } }
+  stubFolderRoomFiles(on, marks, written, ['taken'])
+  const registered: string[] = []
+  on('tool.register' as any, (_$: any, e: any) => {
+    registered.push(e.name)
+    return { value: { tool: `mcp__agent-station__${e.name}` } }
+  })
+  const db = fakeOfficeDatabase(on)
+  db.seed('config', 'departments', FOLDER_STATION)
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+  expect(registered).toContain('mark_folder_room')
+
+  const text = async (input: Record<string, unknown>) => JSON.stringify(await $.tool.call({ tool: 'mcp__agent-station__mark_folder_room', ...input } as any))
+  expect(await text({ room: 'nope' })).toContain('has no folder room')
+  expect(await text({ room: 'books', directory: 'legal' })).toContain('is a git repo with the remote')
+  expect(await text({ room: 'books', directory: 'taken' })).toContain('already has a mark')
+  expect(await text({ room: 'books', directory: '../up' })).toContain('or the full path of a folder')
+  expect(written.length).toBe(0)
+
+  expect(await text({ room: 'books' })).toContain('The dispatcher found it')
+  expect(written.map(w => w.path)).toEqual(['C:/work/books/.agent-station'])
+  expect(JSON.parse(written[0].text)).toEqual({ station: OFFICE, room: BOOKS_ID })
+  expect(await text({ room: 'books' })).toContain('is already marked')
+  await clock.advance(60_000)
+})
+
+test('only the coordination session gets mark_folder_room', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls, [], [], undefined, 'C:/work/app')
+  stubGit(on)
+  stubFolderRoomFiles(on, {})
+  const registered: string[] = []
+  on('tool.register' as any, (_$: any, e: any) => {
+    registered.push(e.name)
+    return { value: { tool: `mcp__agent-station__${e.name}` } }
+  })
+  const db = fakeOfficeDatabase(on)
+  db.seed('config', 'departments', FOLDER_STATION)
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+  expect(registered).toContain('propose_order')
+  expect(registered).not.toContain('mark_folder_room')
+  await clock.advance(60_000)
+})
+
+// Places: where a machine looks besides the coordination repo's neighbours,
+// as config/places lists them under the machine's name.
+function stubPlacesDisk(on: any, dirs: Record<string, string[]>, marks: Record<string, unknown> = {}) {
+  on('fs.list' as any, (_$: any, e: any) => {
+    const path = String(e.path ?? e).replace(/\\/g, '/').replace(/\/+$/, '')
+    if (path in dirs) return { value: dirs[path].map(name => ({ name, kind: 'dir' })) }
+    throw new Error('no such directory')
+  })
+  on('fs.read' as any, (_$: any, e: any) => {
+    const path = String(e.path ?? e).replace(/\\/g, '/')
+    if (path in marks) return { value: JSON.stringify(marks[path]) }
+    throw new Error('no such file')
+  })
+}
+
+test('the dispatcher also looks in the places listed for its machine, and says what each one gave', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls)
+  stubGit(on, undefined, { ...REMOTES, 'D:/clients/legal-copy': 'https://github.com/acme/legal.git', 'D:/clients/app2': 'https://github.com/acme/app-repo.git' })
+  stubPlacesDisk(on, {
+    'C:/work': ['coord', 'legal'],
+    'D:/clients': ['app2', 'legal-copy', 'misc'],
+    'E:/books': [],
+  }, { 'E:/books/.agent-station': { room: BOOKS_ID } })
+  const db = fakeOfficeDatabase(on)
+  db.seed('config', 'departments', FOLDER_STATION)
+  db.seed('config', 'places', { byMachine: { TESTPC: ['D:\\clients\\*', 'E:\\books', 'F:\\gone', 'relative\\path', '\\\\server\\share\\*', '//server/share', '/\\server\\share', '\\\\?\\C:\\x'], OTHERPC: ['G:\\never'] } })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(15_000)
+
+  const lease = db.read('dispatchers', 'TESTPC')
+  expect(lease?.rooms).toEqual(['app', 'books', 'legal'])
+  expect(lease?.places).toEqual([
+    { path: 'D:\\clients\\*', rooms: 1, isMissing: false },
+    { path: 'E:\\books', rooms: 1, isMissing: false },
+    { path: 'F:\\gone', rooms: 0, isMissing: true },
+  ])
+  await clock.advance(60_000)
+})
+
+test('a room next to the coordination repo keeps its folder over a copy in a place', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls)
+  stubGit(on, undefined, { ...REMOTES, 'D:/clients/app-old': 'https://github.com/acme/app-repo.git' })
+  stubPlacesDisk(on, { 'C:/work': ['app', 'coord'], 'D:/clients': ['app-old'] })
+  const db = fakeOfficeDatabase(on)
+  db.seed('config', 'places', { byMachine: { TESTPC: ['D:\\clients\\*'] } })
+  db.seed('orders', 'pl1', { text: 'Fix the build', folder: 'app', mode: 'new', status: 'pending', createdAt: Date.now() })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  expect(mcpCalls.find(c => c.tool === 'spawn_task')?.args?.cwd).toBe('C:\\work\\app')
+  expect(db.read('dispatchers', 'TESTPC')?.places).toEqual([{ path: 'D:\\clients\\*', rooms: 0, isMissing: false }])
+  await clock.advance(60_000)
+})
+
+test('a new-session order opens in the place where its room was found', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls)
+  stubGit(on, undefined, { ...REMOTES, 'D:/clients/legal': 'https://github.com/acme/legal.git' })
+  stubPlacesDisk(on, { 'C:/work': ['coord'], 'D:/clients': ['legal'] })
+  const db = fakeOfficeDatabase(on)
+  db.seed('config', 'places', { byMachine: { TESTPC: ['D:\\clients\\*'] } })
+  db.seed('orders', 'pl2', { text: 'Review clause 9', folder: 'legal', mode: 'new', status: 'pending', createdAt: Date.now() })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  expect(mcpCalls.find(c => c.tool === 'spawn_task')?.args?.cwd).toBe('D:\\clients\\legal')
+  await clock.advance(60_000)
+})
+
+test('mark_folder_room marks a folder by its full path, which the dispatcher finds once its place is listed', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls)
+  stubGit(on)
+  const marks: Record<string, unknown> = {}
+  const written: string[] = []
+  on('fs.list' as any, (_$: any, e: any) => {
+    const path = String(e.path ?? e).replace(/\\/g, '/').replace(/\/+$/, '')
+    if (path === 'C:/work') return { value: ['app', 'coord', 'legal'].map(name => ({ name, kind: 'dir' })) }
+    if (path === 'E:/books') return { value: [] }
+    throw new Error('no such directory')
+  })
+  on('fs.read' as any, (_$: any, e: any) => {
+    const path = String(e.path ?? e).replace(/\\/g, '/')
+    if (path in marks) return { value: JSON.stringify(marks[path]) }
+    throw new Error('no such file')
+  })
+  on('fs.write' as any, (_$: any, e: any) => {
+    const path = String(e.path ?? '').replace(/\\/g, '/')
+    if (!path.endsWith('/.agent-station')) return { value: null }
+    written.push(path)
+    marks[path] = JSON.parse(String(e.text ?? e.content ?? '{}'))
+    return { value: null }
+  })
+  on('tool.register' as any, (_$: any, e: any) => ({ value: { tool: `mcp__agent-station__${e.name}` } }))
+  const db = fakeOfficeDatabase(on)
+  db.seed('config', 'departments', FOLDER_STATION)
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+
+  const text = async (input: Record<string, unknown>) => JSON.stringify(await $.tool.call({ tool: 'mcp__agent-station__mark_folder_room', ...input } as any))
+  expect(await text({ room: 'books', directory: 'F:\\nowhere' })).toContain('there is no folder')
+  expect(await text({ room: 'books', directory: 'E:\\books' })).toContain('adds its path')
+  expect(written).toEqual(['E:/books/.agent-station'])
+
+  db.seed('config', 'places', { byMachine: { TESTPC: ['E:\\books'] } })
+  expect(await text({ room: 'books', directory: 'E:\\books' })).toContain('is already marked')
+  const found: any = await $.tool.call({ tool: 'mcp__agent-station__find_repos' } as any)
+  expect(JSON.stringify(found)).toContain('books (E:')
+  await clock.advance(60_000)
+})
+
+test('a folder room\'s folder set for this machine gets its mark and is found; a repo, another room\'s mark or a missing folder is reported', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls)
+  stubGit(on, undefined, { ...REMOTES, 'D:/code/legal': 'https://github.com/acme/legal.git' })
+  const marks: Record<string, unknown> = { 'E:/other/.agent-station': { room: 'ffffffffffffffffffffffffffffffff' } }
+  const written: string[] = []
+  on('fs.list' as any, (_$: any, e: any) => {
+    const path = String(e.path ?? e).replace(/\\/g, '/').replace(/\/+$/, '')
+    if (path === 'C:/work') return { value: ['coord'].map(name => ({ name, kind: 'dir' })) }
+    if (['E:/books', 'E:/other', 'D:/code/legal'].includes(path)) return { value: [] }
+    throw new Error('no such directory')
+  })
+  on('fs.read' as any, (_$: any, e: any) => {
+    const path = String(e.path ?? e).replace(/\\/g, '/')
+    if (path in marks) return { value: JSON.stringify(marks[path]) }
+    throw new Error('no such file')
+  })
+  on('fs.write' as any, (_$: any, e: any) => {
+    const path = String(e.path ?? '').replace(/\\/g, '/')
+    if (!path.endsWith('/.agent-station')) return { value: null }
+    written.push(path)
+    marks[path] = JSON.parse(String(e.text ?? e.content ?? '{}'))
+    return { value: null }
+  })
+  const db = fakeOfficeDatabase(on)
+  const station = { ...STATION, repos: [...STATION.repos, { folder: 'books', local: BOOKS_ID }, { folder: 'notes', local: '11111111111111111111111111111111' }, { folder: 'ledger', local: '22222222222222222222222222222222' }, { folder: 'gone', local: '33333333333333333333333333333333' }] }
+  db.seed('config', 'departments', station)
+  db.seed('config', 'places', { folderRooms: { TESTPC: { books: 'E:\\books', notes: 'E:\\other', ledger: 'D:\\code\\legal', gone: 'F:\\gone', nobody: 'E:\\books' }, OTHERPC: { books: 'G:\\books' } } })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(15_000)
+
+  expect(written).toEqual(['E:/books/.agent-station'])
+  expect(marks['E:/books/.agent-station']).toEqual({ station: OFFICE, room: BOOKS_ID })
+  const lease = db.read('dispatchers', 'TESTPC')
+  expect(lease?.rooms).toContain('books')
+  expect(lease?.folderPaths).toEqual([
+    { room: 'books', path: 'E:\\books', state: 'found' },
+    { room: 'notes', path: 'E:\\other', state: 'taken' },
+    { room: 'ledger', path: 'D:\\code\\legal', state: 'repo' },
+    { room: 'gone', path: 'F:\\gone', state: 'missing' },
+  ])
+  await clock.advance(60_000)
+})
+
+test('a dispatcher whose plugin copy has been reloaded stops polling', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubEngine(on, mcpCalls)
+  stubGit(on)
+  stubFolders(on)
+  let orderQueries = 0
+  on('tool.call', { tool: 'ArtifactData' }, (_$: any, e: any, next: any) => {
+    if (e.action === 'query' && e.collection === 'orders') orderQueries++
+    return next(e)
+  })
+  fakeOfficeDatabase(on)
+  // A reload of the plugin starts a newer dispatcher, which writes its own generation.
+  let isReloaded = false
+  on('state.get' as any, (_$: any, e: any, next: any) => e.key === 'dispatcherGeneration' && isReloaded ? { value: { value: 'a-newer-copy' } } : next(e))
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(2 * 60_000)
+  const whileCurrent = orderQueries
+  expect(whileCurrent).toBeGreaterThan(0)
+
+  isReloaded = true
+  await clock.advance(30_000)
+  const atStop = orderQueries
+  await clock.advance(5 * 60_000)
+  expect(orderQueries).toBe(atStop)
+})
+
+test('an unchanged catalog of handoffs is not written again whole, only when it was read', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [])
+  let issues = [{ number: 3, title: 'Crash on login', url: 'u3', createdAt: 'x', labels: [] }]
+  stubGit(on, argv => argv[1] === 'issue' && argv.includes('acme/app-repo') ? { exitCode: 0, stdout: JSON.stringify(issues) } : { exitCode: 0, stdout: '[]' })
+  stubFolders(on)
+  const writes: string[] = []
+  on('tool.call', { tool: 'ArtifactData' }, (_$: any, e: any, next: any) => {
+    if (e.collection === 'config' && e.doc_id === 'handoffs' && e.action !== 'get') writes.push(e.action)
+    return next(e)
+  })
+  const db = fakeOfficeDatabase(on)
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+  expect(writes).toEqual(['set'])
+
+  // Fifteen minutes later nothing has changed: only the time of the reading.
+  await clock.advance(15 * 60_000)
+  expect(writes).toEqual(['set', 'update'])
+  expect(db.read('config', 'handoffs')?.byFolder?.app?.[0]?.title).toBe('Crash on login')
+
+  // A new issue writes the catalog whole again.
+  issues = [...issues, { number: 4, title: 'Slow sync', url: 'u4', createdAt: 'y', labels: [] }]
+  await clock.advance(15 * 60_000)
+  expect(writes).toEqual(['set', 'update', 'set'])
+  expect(db.read('config', 'handoffs')?.byFolder?.app?.length).toBe(2)
+  await clock.advance(60_000)
+})
+
+test('a card nobody has clicked for an hour is looked at every tenth poll, and still delivered', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [], [{ sessionId: 'local_card', isArchived: false }])
+  stubGit(on)
+  stubFolders(on)
+  let cardQueries = 0
+  on('tool.call', { tool: 'ArtifactData' }, (_$: any, e: any, next: any) => {
+    if (e.action === 'query' && e.collection === 'sessions' && e.query?.where?.[0]?.[0] === 'fromOrder') cardQueries++
+    return next(e)
+  })
+  const db = fakeOfficeDatabase(on)
+  const spawnedAt = Date.now() - 2 * 60 * 60_000
+  db.seed('orders', 'old1', { text: 'Tidy the docs', folder: 'app', mode: 'new', status: 'needs_click', claimedBy: 'TESTPC', spawnedAt, createdAt: spawnedAt })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10 * 30_000)
+  expect(cardQueries).toBeLessThanOrEqual(2)
+
+  // Clicked at last: the session it opened is found, and the order delivered.
+  db.seed('sessions', 'local_card', { folder: 'app', machine: 'TESTPC', state: 'working', fromOrder: 'old1', title: 'Tidy', lastEventAt: Date.now() })
+  await clock.advance(10 * 30_000)
+  expect(db.read('orders', 'old1')?.status).toBe('delivered')
   await clock.advance(60_000)
 })

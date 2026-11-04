@@ -1404,6 +1404,45 @@ test('a session started in a spare folder joins its station once the app moves i
   expect(writes.some(w => w.collection === 'sessions' && w.data?.folder === 'app')).toBe(true)
 })
 
+test('a session the app moves from ~/.claude/spares to its project gets the map with its first message', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const folders = { cwd: 'C:/Users/me/.claude/spares/spare-a1b2' }
+  stubMovingSession(on, 'test-session-new-spare', folders)
+  const writes: any[] = []
+  stubStation(on, e => { writes.push(e); return { result: { text: `The document is now at version ${writes.length}.` } } })
+  on('prompt.submit' as any, (_$: any, e: any) => ({ text: e.text, context: e.context }))
+  const toasts: string[] = []
+  on('ui.toast' as any, (_$: any, e: any) => { toasts.push(String(e?.text ?? e)); return { value: null } })
+
+  // The session starts in the spare folder: it waits there, and says nothing.
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+  expect(writes.some(w => w.collection === 'sessions')).toBe(false)
+
+  // The app moves it to its project, and the user writes the first message.
+  folders.cwd = 'C:/work/app'
+  const first: any = await ($ as any).prompt.submit({ text: 'what do you know of the station' })
+  expect(String((first.context ?? []).join('\n'))).toContain('`app` (this session) | App | Builds the mobile app')
+  expect(toasts.filter(t => /no station|not in any station/i.test(t)).length).toBe(0)
+  await clock.advance(5_000)
+  expect(writes.some(w => w.collection === 'sessions' && w.data?.folder === 'app')).toBe(true)
+})
+
+test('a session the app moves from a folder the plugin does not know as a spare one still gets the map with its first message', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  // Wherever a later version of the app keeps its spare sessions.
+  const folders = { cwd: 'C:/Users/me/AppData/Local/SomeApp/ready/session-77' }
+  stubMovingSession(on, 'test-session-unknown-spare', folders)
+  stubStation(on)
+  on('prompt.submit' as any, (_$: any, e: any) => ({ text: e.text, context: e.context }))
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+  folders.cwd = 'C:/work/legal'
+  const first: any = await ($ as any).prompt.submit({ text: 'hello' })
+  expect(String((first.context ?? []).join('\n'))).toContain('`legal` (this session)')
+})
+
 test('a session that was in no repo joins when it moves to one', { options }, async ($, on) => {
   const clock = mock.clock(on)
   const folders = { cwd: 'C:/Users/me/Desktop' }
@@ -1533,14 +1572,19 @@ test('the map tells a room that its handoffs are its repo\'s open issues, how to
   const app = stationMap(station, 'app', 'mcp__agent-station__propose_order')
   expect(app).toContain("Your room's handoffs are the open issues of its repo, `github.com/acme/app-repo`")
   expect(app).toContain('`gh issue list --repo acme/app-repo`')
-  expect(app).toContain('gh issue edit <n> --repo acme/app-repo --add-label "in progress"')
+  expect(app).toContain('mark it `Doing` (`<n>` is its number): `gh issue edit <n> --repo acme/app-repo --add-label "Doing" --remove-label "To Do"`')
+  // What comes once the work is done is the project's own: the station only says to remove Doing.
+  expect(app).toContain("When its work is done, remove `Doing` and finish it as your project's own instructions say")
+  expect(app).not.toContain('Pending production')
+  expect(app).toContain('One with `Doing` or someone assigned is taken: do not start it.')
+  expect(app).toContain('`gh issue create --repo acme/app-repo --title "…" --body "…" --label "To Do"`')
   const shop = stationMap(station, 'shop', 'mcp__agent-station__propose_order')
   expect(shop).toContain('`glab issue list -R https://gitlab.com/group/shop`')
   expect(stationMap(station, 'quiet', 'mcp__agent-station__propose_order')).not.toContain("Your room's handoffs")
   expect(stationMap(station, 'coord', 'mcp__agent-station__propose_order')).not.toContain("Your room's handoffs")
   const es = stationMap(stationFromConfig({ language: 'es', repos: [{ remote: 'github.com/acme/app-repo', folder: 'app' }], departments: {} }), 'app', 'mcp__agent-station__propose_order')
   expect(es).toContain('Los encargos de tu sala son las issues abiertas de su repo, `github.com/acme/app-repo`')
-  expect(es).toContain('márcalo en curso (`<n>` es su número)')
+  expect(es).toContain('márcalo `Doing` (`<n>` es su número)')
 })
 
 test('a subagent finishing its turn leaves the session working; the session finishing leaves it idle', { options }, async ($, on) => {
@@ -1562,4 +1606,99 @@ test('a subagent finishing its turn leaves the session working; the session fini
   await ($ as any).turn.complete({ answer: 'done', durationMs: 5, isAborted: false, turnId: 'main-1', reason: 'answer' })
   await clock.advance(30_000)
   expect(written.at(-1)?.state).toBe('idle')
+})
+
+// A station with a folder room, "books": a folder with no repo, known by its mark.
+const BOOKS_ID = '0123456789abcdef0123456789abcdef'
+const FOLDER_STATION = { ...STATION, repos: [...STATION.repos, { folder: 'books', local: BOOKS_ID }], departments: { ...STATION.departments, books: { name: 'Books', description: 'Keeps the accounts' } } }
+function stubFolderStation(on: any, writes: any[]) {
+  on('tool.call', { tool: 'ArtifactData' }, (_$: any, e: any) => {
+    if (e.action === 'get' && e.collection === 'config' && e.doc_id === 'departments') {
+      return { result: { text: `1 document\n${JSON.stringify({ id: 'departments', data: FOLDER_STATION, version: 1 })}` } } as any
+    }
+    writes.push(e)
+    return { result: { text: 'The document is now at version 1.' } } as any
+  })
+}
+function stubMarks(on: any, marks: Record<string, unknown>) {
+  on('fs.read' as any, (_$: any, e: any) => {
+    const path = String(e.path ?? e).replace(/\\/g, '/')
+    if (path in marks) return { value: JSON.stringify(marks[path]) }
+    throw new Error('no such file')
+  })
+}
+
+test('a session in a folder with no repo joins the folder room its mark names, also from a subfolder', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-books', 'C:/work/books/2026')
+  stubMarks(on, { 'C:/work/books/.agent-station': { station: OFFICE, room: BOOKS_ID } })
+  const writes: any[] = []
+  stubFolderStation(on, writes)
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(30_000)
+
+  expect(writes.find(w => w.collection === 'sessions')?.data?.folder).toBe('books')
+})
+
+for (const [what, mark] of [['another station', { station: 'https://claude.ai/artifact/other-station', room: BOOKS_ID }], ['a room the station no longer has', { station: OFFICE, room: 'ffffffffffffffffffffffffffffffff' }]] as const) {
+  test(`a mark of ${what} joins no room`, { options }, async ($, on) => {
+    const clock = mock.clock(on)
+    stubSession(on, 'test-session-stray', 'C:/work/books')
+    stubMarks(on, { 'C:/work/books/.agent-station': mark })
+    const writes: any[] = []
+    stubFolderStation(on, writes)
+
+    await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+    await clock.advance(30_000)
+
+    expect(writes.some(w => w.collection === 'sessions')).toBe(false)
+  })
+}
+
+test('a mark with the room alone, as the page shows it, joins that room', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-bare-mark', 'C:/work/books')
+  stubMarks(on, { 'C:/work/books/.agent-station': { room: BOOKS_ID } })
+  const writes: any[] = []
+  stubFolderStation(on, writes)
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(30_000)
+
+  expect(writes.find(w => w.collection === 'sessions')?.data?.folder).toBe('books')
+})
+
+test('a folder with a remote is its repo\'s room even if it also has a mark', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-both', 'C:/work/legal')
+  stubMarks(on, { 'C:/work/legal/.agent-station': { station: OFFICE, room: BOOKS_ID } })
+  const writes: any[] = []
+  stubFolderStation(on, writes)
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(30_000)
+
+  expect(writes.find(w => w.collection === 'sessions')?.data?.folder).toBe('legal')
+})
+
+test('the map lists a folder room and says it has no handoffs', async () => {
+  const station = stationFromConfig(FOLDER_STATION, OFFICE)
+  expect(station.folderRooms).toEqual([{ id: BOOKS_ID, folder: 'books' }])
+  expect(station.repos.some(rule => (rule as any).local)).toBe(false)
+  const map = stationMap(station, 'app', 'mcp__agent-station__propose_order')
+  expect(map).toContain('| `books` | Books | Keeps the accounts |')
+  expect(map).toContain('`books` work in a folder with no repo, so they have no handoffs')
+  const own = stationMap(station, 'books', 'mcp__agent-station__propose_order')
+  expect(own).not.toContain("Your room's handoffs")
+})
+
+test('a folder room entry with a bad id or folder is no room', async () => {
+  const station = stationFromConfig({ repos: [{ folder: 'books', local: 'short' }, { folder: '../up', local: BOOKS_ID }, { folder: 'ok', local: BOOKS_ID.toUpperCase() }] }, OFFICE)
+  expect(station.folderRooms).toEqual([{ id: BOOKS_ID, folder: 'ok' }])
+})
+
+test("a folder room never takes the folder of a repo's room", async () => {
+  const station = stationFromConfig({ repos: [{ remote: 'github.com/acme/legal' }, { folder: 'legal', local: BOOKS_ID }] }, OFFICE)
+  expect(station.folderRooms).toEqual([])
 })

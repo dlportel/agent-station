@@ -384,6 +384,19 @@ textarea { resize: vertical; min-height: 84px; }
 .repo-scan-row { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; font-size: 12px; }
 .repo-scan-row b { font-weight: 400; font-size: 10px; color: var(--fg-strong); }
 .repo-scan-row .warn { color: #ffb43a; }
+.folder-room { display: grid; gap: 4px; }
+.folder-paths { display: grid; gap: 4px; padding: 0 0 6px 12px; }
+.folder-path { display: grid; grid-template-columns: minmax(0, 10em) minmax(0, 1fr) minmax(0, 14em); gap: 8px; align-items: center; font-size: 12px; }
+.folder-path .ok { color: var(--green, #7fd18b); }
+.folder-path .warn { color: #ffb43a; }
+.marks summary { cursor: pointer; }
+@media (max-width: 720px) { .folder-path { grid-template-columns: 1fr; } }
+.repo-scan-machine { display: grid; gap: 4px; padding: 6px 0; border-top: 1px solid var(--line); }
+.repo-scan-machine:first-child { border-top: 0; }
+.places { display: grid; gap: 4px; padding-left: 12px; }
+.places textarea { font-family: inherit; font-size: 12px; }
+.places .warn { color: #ffb43a; font-size: 12px; }
+.places .repo-scan-row .ok { color: var(--green, #7fd18b); }
 .repo-scan-row .ok { color: #7fd6a0; }
 .deck-row { display: grid; grid-template-columns: minmax(0, 1fr) 72px auto 34px; gap: 8px; align-items: center; }
 .deck-row .sub { text-align: right; white-space: nowrap; }
@@ -657,7 +670,21 @@ function applyDepartments(cfg) {
   document.querySelector(".brand h1").textContent = typeof cfg.title === "string" && cfg.title.trim() ? cfg.title : tr("STATION");
   applyTheme();
 }
-const validRepos = repos => Array.isArray(repos) ? repos.filter(r => isPlainObject(r) && typeof r.remote === "string" && r.remote.trim()) : [];
+// A folder room (a room whose agents work in a folder with no repo) is stored
+// as an entry with `local`, its id, and no remote; the page keeps it in the
+// list as a row with an empty remote, so it is a room like any other here.
+const FOLDER_ROOM_ID = /^[0-9a-f]{32}$/, FOLDER_ROOM_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/;
+const isFolderRoomEntry = r => isPlainObject(r) && typeof r.remote !== "string" && FOLDER_ROOM_ID.test(String(r.local ?? "").toLowerCase()) && typeof r.folder === "string" && FOLDER_ROOM_NAME.test(r.folder);
+const validRepos = repos => Array.isArray(repos) ? repos.flatMap(r => isPlainObject(r) && typeof r.remote === "string" && r.remote.trim() ? [r]
+  : isFolderRoomEntry(r) ? [{ remote: "", folder: r.folder, local: String(r.local).toLowerCase(), issues: false }] : []) : [];
+// A new folder room's id: drawn at random, so only the folder that carries it
+// in its mark is that room.
+const newFolderRoomId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, "0")).join("");
+// The mark a folder room's folder carries, as the plugin reads it. The page
+// cannot tell its own address, so its mark names the room alone: its random
+// id is enough. The coordination session's mark adds the station's URL.
+const MARK_FILE = ".agent-station";
+const folderMarkText = id => JSON.stringify({ room: id }, null, 2);
 const FLOORS = {
   metal: "repeating-linear-gradient(90deg,#3a4356 0 30px,#141924 30px 32px)",
   clinic: "repeating-linear-gradient(90deg,#8b97a3 0 14px,#6f7b86 14px 16px)",
@@ -1114,7 +1141,7 @@ function knownModels() {
 const demo = { sessions: [], orders: [], phase: null, sleepy: false, n: 0 };
 // This page's version, the engine's: the sync refuses a page whose version is
 // not the engine's, so the header always says which one is published.
-const PAGE_VERSION = "1.2.80";
+const PAGE_VERSION = "1.2.94";
 // How this viewer wants the page drawn (CONFIGURE, VIEW), kept in their
 // browser, since each screen wants its own: the bridge's and the station's
 // sizes ("auto" or a fixed zoom, texts included), the dialogs' size, the
@@ -1307,7 +1334,7 @@ function renderBridge(now, vs) {
   // While it tells of new handoffs, a click (or Enter) on it ends the alert.
   const isAlerting = alertFor >= 0;
   const helper = el("div", { class: `helper ${consoleState}${isAlerting ? " alert" : ""}`, title: isAlerting ? tr("Click to dismiss the notice") : tr("Support robot"), style: isAlerting ? { "--alert-at": `-${alertFor}ms` } : null,
-    ...(isAlerting ? { role: "button", tabindex: "0", "aria-label": tr("Dismiss the notice of new handoffs"), onclick: () => { helperAlert = null; render(); } } : {}) },
+    ...(isAlerting ? { role: "button", tabindex: "0", "aria-label": tr("Dismiss the notice of new handoffs"), onclick: () => { helperAlert = null; render(true); } } : {}) },
     alertFor >= 0 ? el("span", { class: "helper-sign pixel", title: helperAlert.n === 1 ? tr("A new handoff") : tr("{n} new handoffs", { n: helperAlert.n }), text: `+${helperAlert.n}` }) : null,
     el("div", { class: "hb" },
       consoleState === "busy" ? el("span", { class: "load" }, spr(CAPV, capPal("#c9cfd9"), 2)) : null,
@@ -1331,7 +1358,7 @@ function renderBridge(now, vs) {
     el("div", { class: "box-head" },
       el("span", { class: "box-title" }, tr("RECENT ORDERS")),
       el("button", { class: "btn btn-ghost box-fold", type: "button", "aria-expanded": String(!isRecentFolded), title: tr(isRecentFolded ? "Show the recent orders" : "Fold the recent orders"),
-        onclick: () => { isRecentFolded = !isRecentFolded; try { localStorage.setItem("office-recent", isRecentFolded ? "folded" : "open"); } catch {} render(); } }, isRecentFolded ? "▸" : "▾")),
+        onclick: () => { isRecentFolded = !isRecentFolded; try { localStorage.setItem("office-recent", isRecentFolded ? "folded" : "open"); } catch {} render(true); } }, isRecentFolded ? "▸" : "▾")),
     orders.length > (isRecentFolded ? 0 : recent.length) ? el("button", { class: "btn btn-ghost box-more", type: "button", onclick: () => openBrowse({ kind: "orders" }) }, tr("SEE ALL · {n}", { n: orders.length })) : null,
     isRecentFolded ? null : recent.length ? recent.map(o => orderRow(o, now)) : el("span", { class: "sub", text: tr("You have not given any order yet. Use + GIVE ORDER.") }));
   const proposals = orders.filter(o => o.status === "proposed").sort((a, c) => (c.createdAt || 0) - (a.createdAt || 0));
@@ -1484,9 +1511,9 @@ function browseItems() {
   }
   const byFolder = handoffs.byFolder || {};
   return folderList().filter(f => !f.startsWith("#") && showsIssues(f) && (!browse.filter || f === browse.filter))
-    .flatMap(f => (byFolder[f] || []).map(i => ({ f, i, isWorking: handoffProgress(f, i).length > 0 })))
-    .filter(x => !browse.state || (browse.state === "progress") === x.isWorking)
-    .map(x => ({ ...x, text: ["#" + x.i.number, x.i.title, x.i.excerpt, x.i.from, deptOf(x.f).name, x.f, x.isWorking ? tr("IN PROGRESS") : tr("OPEN"), ...(x.i.assignees || []), ...handoffLabels(x.i)].join(" ") }))
+    .flatMap(f => (byFolder[f] || []).map(i => ({ f, i, state: handoffState(f, i) })))
+    .filter(x => !browse.state || browse.state === x.state)
+    .map(x => ({ ...x, text: ["#" + x.i.number, x.i.title, x.i.excerpt, x.i.from, deptOf(x.f).name, x.f, x.state === "doing" ? "Doing" : "To Do", ...(x.i.assignees || []), ...handoffLabels(x.i)].join(" ") }))
     .sort((a, c) => (Date.parse(c.i.createdAt) || 0) - (Date.parse(a.i.createdAt) || 0));
 }
 function renderBrowse() {
@@ -1527,7 +1554,7 @@ function renderBrowse() {
 }
 function stateFilter() {
   return el("select", { id: "browse-state", "aria-label": tr("State"), onchange: e => { browse.state = e.target.value; browse.page = 0; renderBrowse(); } },
-    [["", tr("Open and in progress")], ["open", tr("Open only")], ["progress", tr("In progress only")]].map(([v, label]) => { const o = el("option", { value: v, text: label }); if (v === browse.state) o.selected = true; return o; }));
+    [["", tr("Every state")], ["todo", tr("To Do only")], ["doing", tr("Doing only")]].map(([v, label]) => { const o = el("option", { value: v, text: label }); if (v === browse.state) o.selected = true; return o; }));
 }
 function orderRow(o, now, onOpen) {
   const meta = OST[o.status] || { label: o.status, color: "#c9cfd9" };
@@ -1616,20 +1643,23 @@ async function askHandoffs() {
   const now = Date.now();
   if (!dispatchers.some(d => now - (d.heartbeatAt || 0) < LEASE_MS)) toast(tr("No dispatcher is running: the handoffs will be read when the coordination session wakes up."));
   handoffsAskedAt = now;
-  render();
+  render(true);
   if (browse?.kind === "handoffs") renderBrowse();
   try {
     await db.doc("config/refresh").set({ handoffsAskedAt: now });
   } catch (error) {
     handoffsAskedAt = 0;
     toast(tr("The handoffs could not be asked for ({code}). Try again.", { code: error?.code || "error" }));
-    render();
+    render(true);
   }
 }
 
-// A handoff is in progress when the station gave an order for it that is on
-// its way or delivered, when its issue has an in-progress label, or when it is
-// assigned to someone; otherwise it is open. The reasons say which.
+// A handoff's state: Doing when the station gave an order for it that is on
+// its way or delivered, when its issue has Doing (or a name teams give it), or
+// when it is assigned to someone; else To Do. The reasons say why it is Doing.
+// What comes after (a label of the team's own, or closing it) is the
+// project's, and shows as one more of its labels.
+const handoffState = (folder, i) => handoffProgress(folder, i).length ? "doing" : "todo";
 const ORDER_AT_WORK = ["pending", "needs_click", "claimed", "delivered"];
 function handoffProgress(folder, i) {
   const reasons = [];
@@ -1641,10 +1671,9 @@ function handoffProgress(folder, i) {
   return reasons;
 }
 function handoffStateChip(folder, i) {
-  const reasons = handoffProgress(folder, i);
-  return reasons.length
-    ? el("b", { class: "hstate progress", title: reasons.join(" · "), text: tr("IN PROGRESS") })
-    : el("b", { class: "hstate open", text: tr("OPEN") });
+  return handoffState(folder, i) === "doing"
+    ? el("b", { class: "hstate progress", title: handoffProgress(folder, i).join(" · "), text: "DOING" })
+    : el("b", { class: "hstate open", text: "TO DO" });
 }
 
 // The repo's own labels of a handoff (an area, a component), as the dispatcher kept them.
@@ -1659,7 +1688,7 @@ function handoffRow(folder, i, now, onOpen) {
 // room that reaches it may have more.
 function handoffCount(list, folder) {
   const count = list.length >= ISSUES_CAP ? tr("{n}+ handoffs (the newest)", { n: ISSUES_CAP }) : pl(list.length, "handoff", "handoffs");
-  const working = folder ? list.filter(i => handoffProgress(folder, i).length).length : 0;
+  const working = folder ? list.filter(i => handoffState(folder, i) === "doing").length : 0;
   return working ? `${count} · ${tr("{n} in progress", { n: working })}` : count;
 }
 
@@ -1669,7 +1698,7 @@ function handoffCount(list, folder) {
 function board(folder) {
   const list = showsIssues(folder) ? handoffs.byFolder?.[folder] || [] : [];
   if (!list.length) return null;
-  const working = list.filter(i => handoffProgress(folder, i).length).length;
+  const working = list.filter(i => handoffState(folder, i) === "doing").length;
   const count = list.length + (list.length >= ISSUES_CAP ? "+" : "");
   return el("button", { class: "board", type: "button",
     title: `${pl(list.length, "open handoff", "open handoffs")}${working ? " · " + tr("{n} in progress", { n: working }) : ""}; ${tr("See all the handoffs of {room}", { room: deptOf(folder).name })}`,
@@ -1864,7 +1893,7 @@ function addCleaner(box) {
     spr(CLEANER, { K: INK, G: "#5d6679", C: "#7fe9fb", Y: "#ffb43a" }, 2)));
 }
 
-// The station may be drawn smaller than its own size (STATION_ZOOMS) so that it
+// The station may be drawn smaller or larger than its own size (FIT_ZOOMS) so that it
 // fits a short screen while the bridge keeps its size. The rect of an element
 // inside the station, as the station's own units see it: measured from the
 // station's corner and undone from its zoom, so robots, capsules and tubes are
@@ -1962,14 +1991,13 @@ function fitHeight(box) {
 // scale down (a larger scale could not fit either); a new width searches from
 // the largest scale.
 let fitCache = { width: 0, u: 0, fewer: 0 };
-// When the station does not fit even at the smallest scale, it is drawn
-// smaller as a whole (texts, signs and boards too), down to the last of these,
-// so a short screen shows it all while the bridge beside it keeps its size.
-// The zoom that fitted last is tried first, so opening a session does not
-// change the station's size.
-const STATION_ZOOMS = [0.9, 0.8, 0.7, 0.6, 0.5];
-// The first tries, in this order: each scale at full size and at 90%.
-const PREFERRED_FITS = [[1, 3], [0.9, 3], [1, 2.5], [0.9, 2.5]];
+// The station is drawn at one of its scales (the size of its robots and
+// rooms) under one of these zooms (everything, texts, signs and boards too):
+// smaller when it does not fit, larger when it fits with room to spare, so a
+// short screen shows it all and a large one is filled, while the bridge beside
+// it keeps its size. Fine steps, so that a room spilling into one more line
+// does not throw the station back by a whole step.
+const FIT_ZOOMS = Array.from({ length: 21 }, (_, i) => Math.round((1.5 - i * 0.05) * 100) / 100);
 // When the station has to shrink a lot, the bridge beside it gives way too,
 // down to the last of these, so the station is never much smaller than the
 // bridge: its drawn size (its scale out of 3, times its zoom) stays at least
@@ -2011,7 +2039,8 @@ function fitWithBridge(box, decks, vs, draw) {
 function fitStation(box, decks, maxH, vs, draw) {
   // A window of another size looks for its zoom afresh, from full size.
   const size = `${window.innerWidth}x${window.innerHeight}`;
-  if (size !== fitZoomFor) { fitZoom = 1; fitZoomFor = size; }
+  const isNewWindow = size !== fitZoomFor;
+  if (isNewWindow) { fitZoom = 1; fitZoomFor = size; }
   // A size the viewer chose: robots at their full scale under that zoom, as
   // wide as the station; when it is taller than the window, the page scrolls.
   if (LOOK.station !== "auto") {
@@ -2028,41 +2057,38 @@ function fitStation(box, decks, maxH, vs, draw) {
     fitCache = { width, u: 3, fewer: Math.min(fewer, FEWER_COLS_TRIES - 1) };
     return grid;
   }
-  const atZoom = z => {
-    box.style.zoom = z === 1 ? "" : String(z);
-    return choosePlan(box, decks, Math.floor(maxH / z), vs, draw);
-  };
   const atZoomWith = (z, scales) => {
     box.style.zoom = z === 1 ? "" : String(z);
     return choosePlan(box, decks, Math.floor(maxH / z), vs, draw, scales);
   };
-  // The plan in use is kept while it fits, so opening a session moves nothing.
-  if (fitZoom !== 1 || fitCache.u) {
-    const plan = atZoom(fitZoom);
+  // The plan in use is kept while it fits in the same window, so opening a
+  // session moves nothing.
+  if (!isNewWindow && fitCache.u) {
+    const plan = atZoomWith(fitZoom, [fitCache.u]);
     if (plan) return plan;
   }
-  // Larger robots are worth slightly smaller texts: a larger scale at 90%
-  // comes before the next scale at full size.
-  for (const [z, u] of PREFERRED_FITS) {
-    const plan = atZoomWith(z, [u]);
-    if (plan) { fitZoom = z; return plan; }
+  // Otherwise the plan that draws the station largest (its scale times its
+  // zoom); at the same size, the larger scale, whose robots are larger for the
+  // texts. A scale that fits at a zoom fits at every smaller one (the station
+  // only gets wider in its own units), so each scale's largest zoom is found by
+  // halving, and only among the zooms that would beat the best so far: every
+  // try draws and measures the station. When not even the smallest of those
+  // zooms fits, none does, and the scale is passed over after one try.
+  let best = null;
+  for (const u of FIT_SCALES) {
+    const zooms = FIT_ZOOMS.filter(z => !best || u * z > best.u * best.z + 1e-9);
+    if (!zooms.length || (best && !atZoomWith(zooms[zooms.length - 1], [u]))) continue;
+    let found = best ? zooms[zooms.length - 1] : 0;
+    for (let lo = 0, hi = zooms.length - (best ? 2 : 1); lo <= hi;) {
+      const mid = (lo + hi) >> 1;
+      if (atZoomWith(zooms[mid], [u])) { found = zooms[mid]; hi = mid - 1; } else lo = mid + 1;
+    }
+    if (found) best = { u, z: found };
   }
-  // Then the largest zoom at which the smallest scale fits, and at that zoom
-  // the largest scale that fits too. A scale that fits at a zoom fits at every
-  // smaller one (the station only gets wider in its own units), so the zooms
-  // are halved instead of walked: every try draws and measures the station.
-  const smallest = FIT_SCALES[FIT_SCALES.length - 1], zooms = [1, ...STATION_ZOOMS];
-  let found = null;
-  for (let lo = 0, hi = zooms.length - 1; lo <= hi;) {
-    const mid = (lo + hi) >> 1;
-    const plan = atZoomWith(zooms[mid], [smallest]);
-    if (plan) { found = { z: zooms[mid], plan }; hi = mid - 1; } else lo = mid + 1;
-  }
-  if (found) {
-    const larger = FIT_SCALES.filter(u => u !== smallest && !PREFERRED_FITS.some(([pz, pu]) => pz === found.z && pu === u));
-    // The station shows the last try, so the smallest scale is drawn again when no larger one fits.
-    const plan = (larger.length && atZoomWith(found.z, larger)) || atZoomWith(found.z, [smallest]);
-    if (plan) { fitZoom = found.z; return plan; }
+  if (best) {
+    // The station shows the last try, so the best one is drawn again.
+    const plan = atZoomWith(best.z, [best.u]);
+    if (plan) { fitZoom = best.z; return plan; }
   }
   fitZoom = 1;
   box.style.zoom = "";
@@ -2116,14 +2142,14 @@ function fitBridge() {
 // found for this window, theme and decks is kept in the viewer's browser: a
 // reload tries it first and draws once while it still fits.
 const FIT_MEMORY = "office-fit";
-const fitMemoryKey = decks => `${window.innerWidth}x${window.innerHeight}|${THEME}|${LOOK.bridge}/${LOOK.station}|${decks.map(d => d.items.join(",")).join(";")}`;
+const fitMemoryKey = decks => `${PAGE_VERSION}|${window.innerWidth}x${window.innerHeight}|${THEME}|${LOOK.bridge}/${LOOK.station}|${decks.map(d => d.items.join(",")).join(";")}`;
 let isFitRecalled = false;
 function recallFit(decks) {
   if (isFitRecalled) return;
   isFitRecalled = true;
   try {
     const m = JSON.parse(localStorage.getItem(FIT_MEMORY) || "null");
-    if (!isPlainObject(m) || m.key !== fitMemoryKey(decks) || !FIT_SCALES.includes(m.u) || ![1, ...STATION_ZOOMS].includes(m.z) || !BRIDGE_ZOOMS.includes(m.b) || !(m.width > 0)) return;
+    if (!isPlainObject(m) || m.key !== fitMemoryKey(decks) || !FIT_SCALES.includes(m.u) || !FIT_ZOOMS.includes(m.z) || !BRIDGE_ZOOMS.includes(m.b) || !(m.width > 0)) return;
     bridgeZoom = m.b; fitZoom = m.z; fitZoomFor = `${window.innerWidth}x${window.innerHeight}`;
     fitCache = { width: m.width, u: m.u, fewer: Number(m.fewer) || 0 };
   } catch {}
@@ -2587,7 +2613,7 @@ function decide(a, now) {
 }
 
 function tickActors() {
-  if (!world || document.hidden) return;
+  if (!world || document.hidden || view !== "station") return;
   const now = performance.now(), dt = TICK_MS / 1000;
   updateLift(now, dt);
   tickCommuters(dt);
@@ -2755,6 +2781,9 @@ function renderList(now, vs) {
 // The periodic refresh keeps "X min ago" current but redraws the station at
 // most every five minutes, so walking robots are not reset mid-route.
 const STATION_REFRESH_MS = 5 * 60 * 1000;
+// Something the station shows changed while a dialog held it still, or while
+// the tab was hidden: it is redrawn once it can be seen again.
+let isStationStale = false;
 // How long the first draw waits for a snapshot that does not come, and how
 // long later snapshots are gathered into one redraw.
 const FIRST_DRAW_WAIT_MS = 2500, DRAW_BURST_MS = 120;
@@ -2764,6 +2793,11 @@ let lastStationRender = 0;
 let isStationReady = false;
 function render(isPeriodic) {
   const now = Date.now(), vs = viewSessions(now);
+  if (document.hidden && isStationReady) {
+    renderHeader(now, vs);
+    if (!isPeriodic) isStationStale = true;
+    return;
+  }
   renderHeader(now, vs);
   renderBridge(now, vs);
   if (view === "station" && !isStationReady) return;
@@ -2803,7 +2837,8 @@ function closeModal() {
   m.hidden = true; m.replaceChildren();
   if (modalReturnFocus?.isConnected) modalReturnFocus.focus({ preventScroll: true });
   modalReturnFocus = null;
-  render();
+  render(!isStationStale);
+  isStationStale = false;
 }
 function renderModal() {
   if (!form) return closeModal();
@@ -3117,8 +3152,8 @@ function sessionLink(id) {
   return s && typeof s.link === "string" && s.link.startsWith("claude://") ? s.link : null;
 }
 function openHandoffDetail(folder, i) {
-  const progress = handoffProgress(folder, i);
-  const rows = [["State", progress.length ? `${tr("In progress")}: ${progress.join(" · ")}` : tr("Open, nobody on it yet")], ["Room", deptOf(folder).name], ["Asked by", i.from || null], ["Labels", handoffLabels(i).join(", ") || null], ["Opened", i.createdAt ? when(Date.parse(i.createdAt)) : null], ["Issue", `#${i.number}`]].filter(([, v]) => v);
+  const progress = handoffProgress(folder, i), state = handoffState(folder, i);
+  const rows = [["State", state === "doing" ? `Doing: ${progress.join(" · ")}` : tr("To Do: nobody on it yet")], ["Room", deptOf(folder).name], ["Asked by", i.from || null], ["Labels", handoffLabels(i).join(", ") || null], ["Opened", i.createdAt ? when(Date.parse(i.createdAt)) : null], ["Issue", `#${i.number}`]].filter(([, v]) => v);
   openInfo(el("div", { class: "card wide", role: "dialog", "aria-label": tr("Handoff") },
     el("div", { class: "card-head" }, el("span", { class: "box-title" }, tr("HANDOFF")), el("span", { style: { display: "flex", gap: "8px" } }, browseBackButton(), el("button", { class: "btn btn-ghost", type: "button", onclick: closeModal }, tr("CLOSE")))),
     el("div", { class: "detail-text", text: i.title || "" }),
@@ -3136,12 +3171,13 @@ function issueHostLabel(url) {
 // An open handoff issue becomes an order for its own department: the order
 // form opens filled in, and the user picks the agent, the session and the
 // model before sending it. The order remembers which issue it came from.
-// The command that marks an issue in progress goes into an order only in the
+// The command that moves an issue to Doing goes into an order only in the
 // exact form the dispatcher writes it; anything else gives the plain words.
 const REPO_PATH = "[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)+";
+const GITLAB_REPO = `https://[a-z0-9.-]+(?::\\d+)?/${REPO_PATH}`;
 const MARK_FORMS = [
-  new RegExp(`^gh label create "in progress" --force --repo ${REPO_PATH} && gh issue edit <n> --repo ${REPO_PATH} --add-label "in progress"$`),
-  new RegExp(`^glab issue update <n> -R https://[a-z0-9.-]+(?::\\d+)?/${REPO_PATH} --label "in progress"$`, "i"),
+  new RegExp(`^gh issue edit <n> --repo ${REPO_PATH} --add-label "Doing" --remove-label "To Do"$`),
+  new RegExp(`^glab issue update <n> -R ${GITLAB_REPO} --label "Doing" --unlabel "To Do"$`, "i"),
 ];
 const isMarkCommand = command => typeof command === "string" && MARK_FORMS.some(form => form.test(command));
 // The command that reads an issue is held to its exact forms the same way.
@@ -3155,12 +3191,13 @@ function assignHandoff(folder, i) {
   form = {
     sessionId: null, proj: folder, role: "main", dest: "any", target: "", modelMode: "session", model: "", msg: "", err: "", showForm: true,
     handoff: { number: i.number, url: link ? i.url : null, title: i.title || "" },
-    // The agent marks the issue in progress first, so it shows so on its host
-    // too, not only on the station, and stays so while the work lasts.
-    text: tr("Take the handoff #{n} \"{title}\" of this repo{link}. Before anything else, mark it in progress: {mark}. Then read it with {view}, do what it asks and close it with the commit or the pull or merge request that solves it. If you leave it unfinished, remove the label \"in progress\". If anything is unclear, ask me before you start.", {
+    // The agent marks the issue Doing first, so it shows so on its host too,
+    // not only on the station, and stays so while the work lasts.
+    text: tr("Take the handoff #{n} \"{title}\" of this repo{link}. Before anything else, mark it Doing: {mark}. Then read it with {view} and do what it asks. {finish} If you leave it unfinished, put it back to To Do and remove Doing. If anything is unclear, ask me before you start.", {
       n: i.number, title: i.title || tr("untitled"), link,
-      mark: isMarkCommand(handoffs.marks?.[folder]) ? String(handoffs.marks[folder]).replaceAll("<n>", String(i.number)) : tr("add the label \"in progress\" to the issue"),
+      mark: isMarkCommand(handoffs.marks?.[folder]) ? String(handoffs.marks[folder]).replaceAll("<n>", String(i.number)) : tr("add the label \"Doing\" to the issue and remove \"To Do\""),
       view: isViewCommand(handoffs.views?.[folder]) ? String(handoffs.views[folder]).replace("<n>", String(Number(i.number))) : `gh issue view ${Number(i.number)}`,
+      finish: tr("When its work is done, remove Doing and finish it as this project's instructions say: with its own label for work that waits to reach production, or by closing it with the commit or the pull or merge request that solves it."),
     }),
   };
   renderModal();
@@ -3255,8 +3292,16 @@ const rowsFrom = (cfg, isTemplate = false) => validRepos(cfg.repos).map(r => {
   const room = isPlainObject(cfg.departments) && isPlainObject(cfg.departments[repoFolder(r)]) ? cfg.departments[repoFolder(r)] : {};
   const style = isGroupRemote(r.remote) ? {} : { ...room };
   delete style.name;
-  return { remote: r.remote, folder: isGroupRemote(r.remote) ? "" : (typeof r.folder === "string" ? r.folder : ""), issues: r.issues !== false, name: typeof room.name === "string" ? room.name : "", style, touched: new Set(isTemplate ? Object.keys(style) : []) };
+  // A folder room taken from a template gets an id of its own, so two
+  // stations made from one template never share a room's mark.
+  return { remote: r.remote, local: r.local ? (isTemplate ? newFolderRoomId() : r.local) : "", paths: r.local && !isTemplate ? folderPathsOf(r.folder) : {}, folder: isGroupRemote(r.remote) ? "" : (typeof r.folder === "string" ? r.folder : ""), issues: r.issues !== false, name: typeof room.name === "string" ? room.name : "", style, touched: new Set(isTemplate ? Object.keys(style) : []) };
 });
+// A folder room's folder on each computer, as config/places keeps it
+// (folderRooms, by computer and room).
+function folderPathsOf(folder) {
+  const byMachine = isPlainObject(placesDoc.folderRooms) ? placesDoc.folderRooms : {};
+  return Object.fromEntries(Object.entries(byMachine).filter(([, rooms]) => isPlainObject(rooms) && typeof rooms[folder] === "string").map(([machine, rooms]) => [machine, rooms[folder]]));
+}
 // A repo added in CONFIGURE starts with a look of its own, so new rooms do not
 // all come out alike: one of a few kinds of room (its floor, furniture and the
 // accessory its robots wear) in one of the accent colours, with a wall tinted
@@ -3275,7 +3320,8 @@ function randomRoomStyle() {
   const kit = pick(ROOM_KITS), accent = pick(STRIPES);
   return { accent, wall: [shade(accent, -.78), shade(accent, -.85)], floor: kit.floor, furniture: [...kit.furniture], accessory: kit.accessory };
 }
-const emptyRow = () => ({ remote: "", folder: "", issues: true, name: "", style: randomRoomStyle(), touched: new Set() });
+const emptyRow = () => ({ remote: "", local: "", folder: "", issues: true, name: "", style: randomRoomStyle(), touched: new Set() });
+const emptyFolderRow = () => ({ ...emptyRow(), local: newFolderRoomId(), issues: false, paths: {} });
 const rowKey = r => r.folder.trim() || repoFolder(r);
 // A room the agents cannot place a task in: no description of what its agent
 // does. The map they get shows it as not described.
@@ -3297,7 +3343,7 @@ function suggestCoordination() {
   if (!cfgForm.coordination.trim() && recommended) { cfgForm.coordination = recommended; markDirty(); }
 }
 function coordinationSelect() {
-  const keys = [...new Set(cfgForm.repos.filter(r => !isGroupRemote(r.remote) && rowKey(r)).map(rowKey))];
+  const keys = [...new Set(cfgForm.repos.filter(r => !r.local && !isGroupRemote(r.remote) && rowKey(r)).map(rowKey))];
   const current = cfgForm.coordination.trim(), recommended = recommendedCoordination();
   if (current && !keys.includes(current)) keys.push(current);
   return el("select", { id: "cfg-coordination", onchange: e => { cfgForm.coordination = e.target.value; markDirty(); renderConfig(); } },
@@ -3337,13 +3383,20 @@ function refreshRoomPreview() {
   if (box && r) box.replaceChildren(roomPreview(r));
 }
 // Moves a repo row up or down the list; the panel open on it follows it.
+// A row moves past the next row of its own list (repos, or folder rooms, each
+// in its own tab), so a move never seems to do nothing.
+const neighbourOf = (k, step) => {
+  const list = cfgForm.repos, isFolder = !!list[k]?.local;
+  for (let to = k + step; to >= 0 && to < list.length; to += step) if (!!list[to].local === isFolder) return to;
+  return -1;
+};
 function moveRepo(k, step) {
-  const to = k + step, list = cfgForm.repos;
-  if (to < 0 || to >= list.length) return;
+  const to = neighbourOf(k, step), list = cfgForm.repos;
+  if (to < 0) return;
   [list[k], list[to]] = [list[to], list[k]];
   if (cfgForm.room === k) cfgForm.room = to; else if (cfgForm.room === to) cfgForm.room = k;
   markDirty(); renderConfig();
-  document.querySelectorAll(".repo-row")[to]?.querySelector(".move button:not([disabled])")?.focus();
+  document.getElementById(`cfg-remote-${to}`)?.closest(".repo-row")?.querySelector(".move button:not([disabled])")?.focus();
 }
 function moveDeck(k, step) {
   const to = k + step, list = cfgForm.decks;
@@ -3383,7 +3436,7 @@ function roomCard(r, k) {
   doesInput.value = typeof s.description === "string" ? s.description : d.description;
   return el("div", { class: "card room-card", id: "room-card", role: "dialog", "aria-label": tr("Room") },
     el("div", { class: "card-head" }, el("span", { class: "pixel", style: { fontSize: "13px", color: "var(--fg-strong)" } }, tr("ROOM SETTINGS")), el("button", { class: "btn btn-ghost", type: "button", onclick: () => { cfgForm.room = null; renderConfig(); } }, tr("CLOSE"))),
-    el("div", { class: "sub", text: `${r.name.trim() || d.name} · ${normalizeRemote(r.remote) || tr("repo without a remote")}` }),
+    el("div", { class: "sub", text: `${r.name.trim() || d.name} · ${r.local ? tr("folder room, with no repo") : normalizeRemote(r.remote) || tr("repo without a remote")}` }),
     el("div", { id: "room-preview-box" }, roomPreview(r)),
     el("div", { class: "room-editor" },
       el("label", { class: "field", for: `cfg-name-${k}` }, el("span", {}, tr("VISIBLE NAME")), nameInput),
@@ -3432,7 +3485,8 @@ function loadSeedIntoForm() {
 function seedRowsMissing() {
   if (!seed) return [];
   const present = new Set(cfgForm.repos.map(r => normalizeRemote(r.remote)).filter(Boolean));
-  return rowsFrom(seed, true).filter(r => !present.has(normalizeRemote(r.remote)));
+  const folders = new Set(cfgForm.repos.filter(r => r.local).map(r => r.folder.trim()));
+  return rowsFrom(seed, true).filter(r => r.local ? !folders.has(r.folder) : !present.has(normalizeRemote(r.remote)));
 }
 function markDirty() { if (cfgForm) { cfgForm.isDirty = true; cfgForm.isClosing = false; } }
 // Closing with unsaved changes takes a second press, so nothing is lost by accident.
@@ -3515,7 +3569,7 @@ function refreshSharedPreview(kind) {
 }
 
 // CONFIGURE in three tabs: the station itself, its repos and rooms, and its decks.
-const CONFIG_TABS = [["general", "GENERAL"], ["repos", "REPOS"], ["decks", "DECKS"], ["look", "VIEW"]];
+const CONFIG_TABS = [["general", "GENERAL"], ["repos", "REPOS"], ["folders", "FOLDERS"], ["decks", "DECKS"], ["look", "VIEW"]];
 const cfgTab = () => CONFIG_TABS.some(([key]) => key === cfgForm?.tab) ? cfgForm.tab : "general";
 function renderConfig() {
   const m = document.getElementById("modal");
@@ -3545,7 +3599,8 @@ function renderConfig() {
       if (other && other.value !== v) { other.value = v; refreshRoomPreview(); }
     });
     return el("div", { class: "repo-row" + (cfgForm.room === k ? " selected" : "") },
-      withRefresh(input(`cfg-remote-${k}`, r.remote, tr("Repo remote"), tr("server/group/repo"), v => { r.remote = v; })),
+      r.local ? withRefresh(input(`cfg-remote-${k}`, r.folder, tr("Folder of the room"), tr("folder name"), v => { r.folder = v; }))
+        : withRefresh(input(`cfg-remote-${k}`, r.remote, tr("Repo remote"), tr("server/group/repo"), v => { r.remote = v; })),
       nameField,
       // The coordination's sessions have no room on the station, so no deck either.
       isCoordinationRow(r) ? el("span", { class: "coord-tag", title: tr("This repo's session delivers the orders; it has no room") }, tr("COORDINATION"))
@@ -3554,21 +3609,24 @@ function renderConfig() {
         cfgForm.room = cfgForm.room === k ? null : k; renderConfig();
         if (cfgForm.room != null && window.matchMedia("(max-width: 720px)").matches) document.getElementById("room-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
       } }, tr("SETTINGS")),
-      isCoordinationRow(r) ? el("span") : el("button", { class: "btn btn-ghost issues-btn", type: "button", "data-label": tr("ISSUES") + ":", "aria-pressed": String(r.issues !== false), title: tr(isGroup ? "Show the open issues of this group's repos on the station" : "Show this repo's open issues on the station"), onclick: () => { r.issues = r.issues === false; markDirty(); renderConfig(); } }, r.issues === false ? tr("NO") : tr("YES")),
+      isCoordinationRow(r) || r.local ? el("span")
+        : el("button", { class: "btn btn-ghost issues-btn", type: "button", "data-label": tr("ISSUES") + ":", "aria-pressed": String(r.issues !== false), title: tr(isGroup ? "Show the open issues of this group's repos on the station" : "Show this repo's open issues on the station"), onclick: () => { r.issues = r.issues === false; markDirty(); renderConfig(); } }, r.issues === false ? tr("NO") : tr("YES")),
       el("span", { class: "move" },
-        el("button", { class: "btn btn-ghost", type: "button", title: tr("Up: its room is drawn earlier"), "aria-label": tr("Move this repo up"), disabled: k === 0, onclick: () => moveRepo(k, -1) }, "▲"),
-        el("button", { class: "btn btn-ghost", type: "button", title: tr("Down: its room is drawn later"), "aria-label": tr("Move this repo down"), disabled: k === cfgForm.repos.length - 1, onclick: () => moveRepo(k, 1) }, "▼")),
+        el("button", { class: "btn btn-ghost", type: "button", title: tr("Up: its room is drawn earlier"), "aria-label": tr("Move this repo up"), disabled: neighbourOf(k, -1) < 0, onclick: () => moveRepo(k, -1) }, "▲"),
+        el("button", { class: "btn btn-ghost", type: "button", title: tr("Down: its room is drawn later"), "aria-label": tr("Move this repo down"), disabled: neighbourOf(k, 1) < 0, onclick: () => moveRepo(k, 1) }, "▼")),
       el("button", { class: "btn btn-ghost del", type: "button", title: tr("Remove this repo"), "aria-label": tr("Remove this repo"), onclick: () => {
         cfgForm.repos.splice(k, 1); cfgForm.err = ""; markDirty();
         if (cfgForm.room === k) cfgForm.room = null; else if (cfgForm.room > k) cfgForm.room--;
         renderConfig();
       } }, "✕"));
   });
+  const repoRows = rows.filter((_, k) => !cfgForm.repos[k].local);
+  const folderRows = rows.flatMap((row, k) => cfgForm.repos[k].local ? [el("div", { class: "folder-room" }, row, folderPathsLine(cfgForm.repos[k], k))] : []);
   const roomRow = cfgForm.room != null ? cfgForm.repos[cfgForm.room] : null;
   const missing = seedRowsMissing();
   const card = el("div", { class: "card config", role: "dialog", "aria-label": tr("Station configuration") },
     el("div", { class: "card-head" }, el("span", { class: "pixel", style: { fontSize: "13px", color: "var(--fg-strong)" } }, tr("CONFIGURATION")), el("button", { class: "btn btn-ghost", type: "button", onclick: requestCloseConfig }, tr("CLOSE"))),
-    el("div", { class: "cfg-tabs", role: "tablist" }, CONFIG_TABS.map(([key, label]) => el("button", { class: "tab", role: "tab", type: "button", "aria-selected": String(cfgTab() === key), onclick: () => { cfgForm.tab = key; if (key !== "repos") cfgForm.room = null; if (key !== "decks") cfgForm.sharedRoom = null; renderConfig(); } }, tr(label)))),
+    el("div", { class: "cfg-tabs", role: "tablist" }, CONFIG_TABS.map(([key, label]) => el("button", { class: "tab", role: "tab", type: "button", "aria-selected": String(cfgTab() === key), onclick: () => { cfgForm.tab = key; if (key !== "repos" && key !== "folders") cfgForm.room = null; if (key !== "decks") cfgForm.sharedRoom = null; renderConfig(); } }, tr(label)))),
     cfgTab() === "repos" ? el("div", { class: "cfg-pane", role: "tabpanel", "aria-label": tr("Repos") },
     seed && !REPOS.length && !cfgForm.fromTemplate ? el("div", { class: "field" }, el("span", {}, tr("TEMPLATE")),
       el("p", { class: "hint", text: tr("This station has no repos yet. You can start from the template, which brings the repos, the rooms and their layout, and then remove or add what you want before saving. Whatever the station already has is kept.") }),
@@ -3576,23 +3634,34 @@ function renderConfig() {
     el("div", { class: "field" }, el("span", {}, tr("STATION REPOS")),
       el("p", { class: "hint", text: tr("One row per repo, with the remote of its origin (for example github.com/organization/repo). A remote ending in /* takes every repo of that group, each with its own room. The rooms are drawn in the order of this list: move them with ▲ and ▼. ROOM is the room's visible name, which SETTINGS also edits with what its agent does and its look. ISSUES says whether the station shows the repo's open issues.") }),
       el("div", { class: "repo-head" }, el("span", { text: tr("REMOTE") }), el("span", { text: tr("ROOM") }), el("span", { text: tr("DECK") }), el("span"), el("span", { text: tr("ISSUES") }), el("span", { text: tr("ORDER") }), el("span")),
-      el("div", { class: "repo-rows" }, rows),
+      el("div", { class: "repo-rows" }, repoRows),
       el("div", { style: { display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" } },
         el("button", { class: "quick", type: "button", onclick: () => { cfgForm.repos.push(emptyRow()); markDirty(); renderConfig(); document.getElementById(`cfg-remote-${cfgForm.repos.length - 1}`)?.focus(); } }, tr("+ ADD REPO")),
         missing.length ? el("select", { id: "cfg-from-seed", "aria-label": tr("Add a repo from the template"), style: { width: "auto", maxWidth: "100%" }, onchange: e => {
           const row = missing[Number(e.target.value)];
           if (!row) return;
-          cfgForm.repos = cfgForm.repos.filter(r => r.remote.trim());
+          cfgForm.repos = cfgForm.repos.filter(r => r.remote.trim() || r.local);
           cfgForm.repos.push(row);
           cfgForm.room = null;
           markDirty();
           renderConfig();
         } },
-          [el("option", { value: "", text: `${tr("+ ADD FROM THE TEMPLATE")} (${missing.length})` })].concat(missing.map((r, k) => el("option", { value: String(k), text: r.name ? `${r.name} · ${r.remote}` : r.remote })))) : null)),
+          [el("option", { value: "", text: `${tr("+ ADD FROM THE TEMPLATE")} (${missing.length})` })].concat(missing.map((r, k) => el("option", { value: String(k), text: r.name ? `${r.name} · ${r.remote || r.folder}` : r.remote || r.folder })))) : null)),
+    (() => { const bare = cfgForm.repos.map(r => normalizeRemote(r.remote)).filter(r => r && r.split("/").length < 3); return bare.length ? el("p", { class: "hint warn", text: tr("{remotes}: no server in the remote, so no clone matches it and its room shows as not cloned. Write the server in front, such as github.com/.", { remotes: bare.join(", ") }) }) : null; })(),
     orphanRooms().length ? el("p", { class: "hint warn", text: tr("The rooms {rooms} are on the decks but their repo is not in this list, so the station draws them and the sessions cannot ask them for work. Add their repo here, or save: saving takes them off the decks.", { rooms: orphanRooms().map(f => `${deptOf(f).name} (${f})`).join(", ") }) }) : null,
-    cfgForm.repos.some(needsDescription) ? el("p", { class: "hint warn", text: tr("Rooms without a description: {rooms}. The station's agents read what each room's agent does to know where a task belongs; write it under SETTINGS.", { rooms: cfgForm.repos.filter(needsDescription).map(rowKey).join(", ") }) }) : null,
+    describeWarning(r => !r.local),
     repoScanBox(),
     el("p", { class: "hint", text: tr("The rooms change on saving. Removing a repo removes its room too. A new repo only shows in the sessions opened afterwards, or after /reload-plugins in those already open.") }))
+    : cfgTab() === "folders" ? el("div", { class: "cfg-pane", role: "tabpanel", "aria-label": tr("Folders") },
+    el("div", { class: "field" }, el("span", {}, tr("FOLDER ROOMS")),
+      el("p", { class: "hint", text: tr("A folder room is a room whose agents work in a folder that is no git repo. One row per room, with the name of its folder and, under it, the folder's full path on each computer (empty when it is next to the coordination repo). It has no issues, so no handoffs: ask it for work with orders. Move the rows with ▲ and ▼; SETTINGS edits its name, what its agent does and its look.") }),
+      folderRows.length ? el("div", { class: "repo-head" }, el("span", { text: tr("FOLDER") }), el("span", { text: tr("ROOM") }), el("span", { text: tr("DECK") }), el("span"), el("span"), el("span", { text: tr("ORDER") }), el("span")) : null,
+      folderRows.length ? el("div", { class: "repo-rows" }, folderRows) : el("p", { class: "hint", text: tr("This station has no folder rooms yet.") }),
+      el("div", { style: { display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" } },
+        el("button", { class: "quick", type: "button", onclick: () => { cfgForm.repos.push(emptyFolderRow()); markDirty(); renderConfig(); document.getElementById(`cfg-remote-${cfgForm.repos.length - 1}`)?.focus(); } }, tr("+ ADD FOLDER ROOM")))),
+    describeWarning(r => !!r.local),
+    folderRoomsBox(),
+    el("p", { class: "hint", text: tr("The rooms and their folders change on saving; the dispatchers look for them again at once. Sessions already open in a folder join its room once they are opened again.") }))
     : cfgTab() === "decks" ? el("div", { class: "cfg-pane", role: "tabpanel", "aria-label": tr("Decks") },
     el("div", { class: "field" }, el("span", {}, tr("DECKS")),
       el("p", { class: "hint", text: tr("Each deck is a named row of rooms. Choose each room's deck in its row, under REPOS. The decks are drawn in this order (▲ ▼), the rooms of a deck in the order of the repo list, and a room on no deck shows at the end, under OTHERS. A deck with no rooms yet is kept, and shows on the station once a room is on it.") }),
@@ -3640,6 +3709,47 @@ function renderConfig() {
       el("button", { class: "btn btn-cyan", type: "button", onclick: saveConfig }, tr("SAVE"))));
   showModal(el("div", { class: "sheet sheet-config", onclick: e => e.stopPropagation() }, card, roomRow && !isGroupRemote(roomRow.remote) ? roomCard(roomRow, cfgForm.room) : cfgForm.sharedRoom ? sharedRoomCard(cfgForm.sharedRoom) : null), requestCloseConfig);
 }
+// The rooms of a tab with no description of what their agent does.
+function describeWarning(isOfTab) {
+  const rows = cfgForm.repos.filter(r => isOfTab(r) && needsDescription(r));
+  return rows.length ? el("p", { class: "hint warn", text: tr("Rooms without a description: {rooms}. The station's agents read what each room's agent does to know where a task belongs; write it under SETTINGS.", { rooms: rows.map(rowKey).join(", ") }) }) : null;
+}
+// CONFIGURE, FOLDERS: where a folder room's folder is on each computer that
+// runs a dispatcher. Left empty, it is looked for next to the coordination
+// repo. Saved with SAVE; the dispatcher of that computer marks the folder and
+// says here what it found.
+const FOLDER_PATH_STATES = {
+  found: ["ok", "found"],
+  missing: ["warn", "not found on this computer"],
+  repo: ["warn", "a git repo with a remote: add it in REPOS by its remote"],
+  taken: ["warn", "it has the mark of another room"],
+};
+function folderPathsLine(r, k) {
+  const machines = [...dispatchers].filter(d => d.machine).sort((a, c) => String(a.machine).localeCompare(String(c.machine)));
+  if (!machines.length) return el("p", { class: "hint", text: tr("Its folder on each computer can be set once a dispatcher has run there.") });
+  return el("div", { class: "folder-paths" }, machines.map(d => {
+    const machine = String(d.machine), path = String(r.paths?.[machine] ?? ""), room = rowKey(r);
+    const scan = (Array.isArray(d.folderPaths) ? d.folderPaths : []).find(f => isPlainObject(f) && f.room === room && f.path === path.trim());
+    const isNear = !path.trim() && Array.isArray(d.rooms) && d.rooms.includes(room);
+    const [cls, text] = scan && FOLDER_PATH_STATES[scan.state] ? FOLDER_PATH_STATES[scan.state] : path.trim() ? ["", "not looked at yet"] : isNear ? ["ok", "found next to the coordination repo"] : ["", ""];
+    const field = el("input", { type: "text", id: `cfg-fpath-${k}-${machine}`, spellcheck: "false", placeholder: tr("full path, or empty if it is next to the coordination repo"), "aria-label": tr("Folder of {room} on {machine}", { room: room || tr("the room"), machine }), oninput: e => { r.paths = { ...(r.paths || {}), [machine]: e.target.value }; markDirty(); } });
+    field.value = path;
+    return el("label", { class: "folder-path", for: field.id }, el("span", { class: "sub", text: tr("On {machine}", { machine }) }), field, text ? el("span", { class: cls, text: tr(text) }) : el("span"));
+  }));
+}
+// CONFIGURE, FOLDERS: how a folder room's folder is marked by hand. The mark holds the
+// station's URL and the room's id; once the room is saved, the coordination
+// session writes it when the user asks, or the user creates the file.
+function folderRoomsBox() {
+  const rows = cfgForm.repos.filter(r => r.local && r.folder.trim());
+  if (!rows.length) return null;
+  return el("details", { class: "field marks" },
+    el("summary", { class: "sub", text: tr("The marks, to create them by hand") }),
+    el("p", { class: "hint", text: tr("A folder becomes its room by a mark, the file {file} inside it. The dispatcher of each computer writes it in the folder set for that computer once you save; with no folder set there, it looks next to the coordination repo for a folder already marked. To mark one by hand, create the file with the text below.", { file: MARK_FILE }) }),
+    rows.map(r => el("div", { style: { display: "grid", gap: "4px" } },
+      el("span", { class: "sub", text: `${r.folder.trim()}/${MARK_FILE}` }),
+      el("pre", { style: { margin: "0", padding: "8px", background: "var(--bg-deep, #0b0f17)", border: "1px solid var(--line, #2a3242)", fontSize: "12px", whiteSpace: "pre-wrap", wordBreak: "break-all", userSelect: "all" } }, folderMarkText(r.local)))));
+}
 // CONFIGURE, REPOS: the station's repos each computer's dispatcher found next
 // to its coordination repo, and the rooms with no clone there. FIND REPOS asks
 // the dispatchers to look again (config/refresh reposAskedAt), for a repo cloned
@@ -3657,21 +3767,77 @@ function repoScanParts() {
   return [
     el("span", {}, tr("REPOS ON EACH COMPUTER")),
     el("p", { class: "hint", text: tr("The dispatcher of each computer finds the station's repos in the folders next to the coordination repo: when it starts, before failing an order for a room it does not find, and when you press FIND REPOS. After cloning a repo there, press it so the room takes orders without restarting the coordination session. You can also ask the coordination session to look for them.") }),
+    el("p", { class: "hint", text: tr("A repo or a folder room elsewhere on a computer: write its path under that computer, or its parent ending in \\* to take every folder inside. The paths are that computer's alone, and only say where to look: each folder is still known by its remote or its mark.") }),
     machines.length ? el("div", { class: "repo-scan" }, machines.map(d => {
       const rooms = Array.isArray(d.rooms) ? d.rooms : null;
       const missing = rooms ? configured.filter(f => !rooms.includes(f)) : [];
-      return el("div", { class: "repo-scan-row" },
-        el("b", { class: "pixel", text: d.machine || "?" }),
-        el("span", { text: rooms ? `${pl(rooms.length, "room", "rooms")}${d.roomsScannedAt ? " · " + ago(d.roomsScannedAt, now) : ""}` : tr("has not looked for them yet") }),
-        missing.length ? el("span", { class: "warn", text: tr("no clone here: {rooms}", { rooms: missing.map(f => deptOf(f).name).join(", ") }) }) : rooms ? el("span", { class: "ok", text: tr("every room is here") }) : null);
+      return el("div", { class: "repo-scan-machine" },
+        el("div", { class: "repo-scan-row" },
+          el("b", { class: "pixel", text: d.machine || "?" }),
+          el("span", { text: rooms ? `${pl(rooms.length, "room", "rooms")}${d.roomsScannedAt ? " · " + ago(d.roomsScannedAt, now) : ""}` : tr("has not looked for them yet") }),
+          missing.length ? el("span", { class: "warn", text: tr("no clone here: {rooms}", { rooms: missing.map(f => deptOf(f).name).join(", ") }) }) : rooms ? el("span", { class: "ok", text: tr("every room is here") }) : null),
+        d.machine ? placesEditor(d) : null);
     })) : el("p", { class: "hint", text: tr("No dispatcher has run on any computer yet.") }),
     el("button", { class: "btn btn-ghost", type: "button", style: { justifySelf: "start" }, disabled: isSearching, onclick: askRepos }, isSearching ? tr("LOOKING…") : tr("↻ FIND REPOS")),
   ];
 }
+// CONFIGURE, REPOS: the places each computer looks in besides the coordination
+// repo's neighbours (config/places, byMachine), with what each gave on its last
+// scan. The paths belong to that computer alone: its dispatcher reads only its
+// own. A place says where to look; what each folder is, its remote or its mark
+// says. A list being typed is kept across redraws (placesDraft).
+let placesDoc = {}, placesDraft = {}, placesErr = {};
+// A drive path or a Unix one, never a network path (\\server\share), as the plugin takes them.
+const PLACE_PATH = /^([A-Za-z]:[\\/]|\/(?![\\/]))/;
+const placesOf = machine => {
+  const listed = isPlainObject(placesDoc.byMachine) ? placesDoc.byMachine[machine] : null;
+  return Array.isArray(listed) ? listed.filter(p => typeof p === "string") : [];
+};
+function placesEditor(d) {
+  const machine = String(d.machine), saved = placesOf(machine);
+  const scanned = new Map((Array.isArray(d.places) ? d.places : []).filter(isPlainObject).map(p => [p.path, p]));
+  const text = placesDraft[machine] ?? saved.join("\n");
+  const isChanged = text.split("\n").map(l => l.trim()).filter(Boolean).join("\n") !== saved.join("\n");
+  const area = el("textarea", { id: `cfg-places-${machine}`, rows: String(Math.max(2, Math.min(6, text.split("\n").length + 1))), spellcheck: "false", placeholder: tr("D:\\Clients\\*   (each folder inside)\nC:\\Users\\me\\OneDrive\\accounts   (this folder)"), "aria-label": tr("Places where {machine} also looks", { machine }), oninput: e => { placesDraft[machine] = e.target.value; placesErr[machine] = ""; } });
+  area.value = text;
+  area.addEventListener("change", refreshRepoScan);
+  return el("div", { class: "places" },
+    el("span", { class: "sub", text: tr("Also looks in (one path per line, of this computer; ending in \\* takes each folder inside):") }),
+    area,
+    saved.length ? el("div", { class: "repo-scan-row" }, saved.map(path => {
+      const p = scanned.get(path);
+      return el("span", { class: p?.isMissing ? "warn" : p ? (p.rooms ? "ok" : "") : "", text: `${path}: ${!p ? tr("not looked at yet") : p.isMissing ? tr("not found") : pl(p.rooms, "room", "rooms")}` });
+    })) : null,
+    placesErr[machine] ? el("span", { class: "warn", text: placesErr[machine] }) : null,
+    isChanged || placesDraft[machine] !== undefined ? el("button", { class: "btn btn-ghost", type: "button", style: { justifySelf: "start" }, onclick: () => savePlaces(machine) }, tr("SAVE PLACES")) : null);
+}
+async function savePlaces(machine) {
+  if (!db) return;
+  const lines = String(placesDraft[machine] ?? placesOf(machine).join("\n")).split("\n").map(l => l.trim()).filter(Boolean);
+  const bad = lines.filter(l => !PLACE_PATH.test(l));
+  if (bad.length) { placesErr[machine] = tr("Not a full path: {paths}. Write it from the drive, such as D:\\Clients.", { paths: bad.join(", ") }); return refreshRepoScan(); }
+  const byMachine = { ...(isPlainObject(placesDoc.byMachine) ? placesDoc.byMachine : {}) };
+  if (lines.length) byMachine[machine] = [...new Set(lines)]; else delete byMachine[machine];
+  try {
+    await db.doc("config/places").set({ ...placesDoc, byMachine });
+    delete placesDraft[machine];
+    placesErr[machine] = "";
+    toast(tr("Places of {machine} saved: its dispatcher looks in them now.", { machine }));
+    await askRepos();
+  } catch (error) {
+    placesErr[machine] = tr("They could not be saved ({code}). Try again.", { code: error?.code || "error" });
+    refreshRepoScan();
+  }
+}
 // Redrawn in place when the dispatchers answer, so typing elsewhere in the form is not disturbed.
 function refreshRepoScan() {
   const box = document.getElementById("cfg-repo-scan");
-  if (box) box.replaceChildren(...repoScanParts());
+  if (!box) return;
+  const focused = document.activeElement?.id?.startsWith("cfg-places-") ? document.activeElement : null;
+  const id = focused?.id, at = focused ? [focused.selectionStart, focused.selectionEnd] : null;
+  box.replaceChildren(...repoScanParts());
+  const again = id ? document.getElementById(id) : null;
+  if (again) { again.focus(); again.setSelectionRange(at[0], at[1]); }
 }
 async function askRepos() {
   if (!db) return;
@@ -3727,6 +3893,15 @@ function lookPane() {
 async function saveConfig() {
   if (!db) { cfgForm.err = tr("The station is not connected in this view."); return renderConfig(); }
   const title = cfgForm.title.trim(), coordination = cfgForm.coordination.trim();
+  const folderRooms = {};
+  for (const row of cfgForm.repos.filter(r => r.local && r.folder.trim())) {
+    for (const [machine, raw] of Object.entries(row.paths || {})) {
+      const path = String(raw ?? "").trim().replace(/[\\/]+$/, "");
+      if (!path) continue;
+      if (!PLACE_PATH.test(path) || /[\\/]\*$/.test(path)) { cfgForm.err = tr("The folder of {room} on {machine} is not a full path of a folder: write it from the drive, such as D:\\Work\\{room}.", { room: row.folder.trim(), machine }); return renderConfig(); }
+      (folderRooms[machine] ||= {})[row.folder.trim()] = path;
+    }
+  }
   if (coordination && !FOLDER_PATTERN.test(coordination)) { cfgForm.err = tr("The coordination takes only letters, digits, dot, hyphen and underscore."); return renderConfig(); }
   const base = cfgForm.fromTemplate && seed ? withTemplate(rawDepartments, seed) : rawDepartments;
   const current = isPlainObject(base.departments) ? base.departments : {};
@@ -3734,17 +3909,30 @@ async function saveConfig() {
   let hasGroup = false;
   for (const row of cfgForm.repos) {
     const remote = normalizeRemote(row.remote), name = row.name.trim();
+    let key;
+    if (row.local) {
+      key = row.folder.trim();
+      if (!key) continue;
+      if (!FOLDER_ROOM_NAME.test(key)) { cfgForm.err = tr("The folder \"{folder}\" takes only letters, digits, dot, hyphen and underscore.", { folder: key }); return renderConfig(); }
+      if (key === coordination) { cfgForm.err = tr("The coordination has to be a repo, not a folder room."); return renderConfig(); }
+      if (keys.has(key)) { cfgForm.err = tr("{a} and {b} would go to the same room, \"{room}\": give one of them another department.", { a: keys.get(key), b: key, room: key }); return renderConfig(); }
+      keys.set(key, key);
+      repos.push({ folder: key, local: row.local });
+    } else {
     if (!remote) continue;
     const isGroup = remote.endsWith("/*"), folder = isGroup ? "" : row.folder.trim();
     if (!/^[^/\s]+\/\S+$/.test(remote)) { cfgForm.err = tr("\"{remote}\" does not look like a remote: write server/group/repo.", { remote: row.remote.trim() }); return renderConfig(); }
+    // owner/repo without its server matches no clone's origin, so its room would never find one.
+    if (remote.split("/").length < 3) { cfgForm.err = tr("\"{remote}\" is missing its server: write it as github.com/{remote}, or with the server it lives on.", { remote }); return renderConfig(); }
     if (seenRemotes.has(remote)) { cfgForm.err = tr("{remote} is repeated.", { remote }); return renderConfig(); }
     if (folder && !FOLDER_PATTERN.test(folder)) { cfgForm.err = tr("The folder \"{folder}\" takes only letters, digits, dot, hyphen and underscore.", { folder }); return renderConfig(); }
     seenRemotes.add(remote);
     repos.push({ remote, ...(folder ? { folder } : {}), ...(row.issues === false ? { issues: false } : {}) });
     if (isGroup) { hasGroup = true; continue; }
-    const key = folder || remote.split("/").pop();
+    key = folder || remote.split("/").pop();
     if (keys.has(key)) { cfgForm.err = tr("{a} and {b} would go to the same room, \"{room}\": give one of them another department.", { a: keys.get(key), b: remote, room: key }); return renderConfig(); }
     keys.set(key, remote);
+    }
     // An existing room keeps what nobody touched; a new one (or one renamed)
     // takes the row's whole room, or the template's.
     const existing = isPlainObject(current[key]) ? current[key] : null;
@@ -3780,9 +3968,16 @@ async function saveConfig() {
   }
   const doc = { ...base, title, theme: cfgForm.theme, language: cfgForm.language, coordination, repos, departments, layout, offStation: [...cfgForm.offStation] };
   if (cfgForm.keepAwake) doc.keepAwake = true; else delete doc.keepAwake;
+  delete doc.doneLabel;
   if (Array.isArray(rawDepartments.aliases)) doc.aliases = rawDepartments.aliases; else delete doc.aliases;
   try {
     await db.doc("config/departments").set(doc);
+    // The folder rooms' folders, kept apart from the configuration since they
+    // belong to each computer; written only when they change.
+    if (JSON.stringify(folderRooms) !== JSON.stringify(isPlainObject(placesDoc.folderRooms) ? placesDoc.folderRooms : {})) {
+      await db.doc("config/places").set({ ...placesDoc, folderRooms });
+      await askRepos();
+    }
     closeModal();
     toast(tr("Configuration saved."));
   } catch (error) {
@@ -4024,6 +4219,13 @@ const ES = {
   "SEE THEM ALL · {n}": "VER TODOS · {n}",
   "↻ UPDATE": "↻ ACTUALIZAR",
   "IN PROGRESS": "EN CURSO",
+  "Every state": "Todos los estados",
+  "To Do only": "Solo To Do",
+  "Doing only": "Solo Doing",
+  "To Do: nobody on it yet": "To Do: nadie lo lleva todavía",
+  "When its work is done, remove Doing and finish it as this project's instructions say: with its own label for work that waits to reach production, or by closing it with the commit or the pull or merge request that solves it.": "Cuando su trabajo esté terminado, quita Doing y termínalo como digan las instrucciones de este proyecto: con su propia etiqueta para el trabajo que espera a llegar a producción, o cerrándolo con el commit o la pull o merge request que lo resuelve.",
+  "Take the handoff #{n} \"{title}\" of this repo{link}. Before anything else, mark it Doing: {mark}. Then read it with {view} and do what it asks. {finish} If you leave it unfinished, put it back to To Do and remove Doing. If anything is unclear, ask me before you start.": "Coge el encargo #{n} «{title}» de este repo{link}. Antes de nada, márcalo Doing: {mark}. Después léelo con {view} y haz lo que pide. {finish} Si lo dejas a medias, vuelve a ponerlo en To Do y quita Doing. Si algo no está claro, pregúntame antes de empezar.",
+  "add the label \"Doing\" to the issue and remove \"To Do\"": "añade a la issue la etiqueta «Doing» y quita «To Do»",
   "OPEN": "ABIERTO",
   "In progress": "En curso",
   "Open, nobody on it yet": "Abierto, nadie trabaja en él todavía",
@@ -4388,6 +4590,33 @@ const ES = {
   "Move this repo down": "Bajar este repo",
   "Remove this repo": "Quitar este repo",
   "+ ADD REPO": "+ AÑADIR REPO",
+  "+ ADD FOLDER ROOM": "+ AÑADIR SALA DE CARPETA",
+  "FOLDERS": "CARPETAS",
+  "Folders": "Carpetas",
+  "The marks, to create them by hand": "Las marcas, para crearlas a mano",
+  "A folder becomes its room by a mark, the file {file} inside it. The dispatcher of each computer writes it in the folder set for that computer once you save; with no folder set there, it looks next to the coordination repo for a folder already marked. To mark one by hand, create the file with the text below.": "Una carpeta pasa a ser su sala por una marca, el fichero {file} dentro de ella. El despachador de cada ordenador la escribe en la carpeta apuntada para ese ordenador al guardar; sin carpeta apuntada, busca junto al repo de coordinación una carpeta ya marcada. Para marcar una a mano, crea el fichero con el texto de abajo.",
+  "A folder room is a room whose agents work in a folder that is no git repo. One row per room, with the name of its folder and, under it, the folder's full path on each computer (empty when it is next to the coordination repo). It has no issues, so no handoffs: ask it for work with orders. Move the rows with ▲ and ▼; SETTINGS edits its name, what its agent does and its look.": "Una sala de carpeta es una sala cuyos agentes trabajan en una carpeta que no es un repo de git. Una fila por sala, con el nombre de su carpeta y, debajo, la ruta completa de la carpeta en cada ordenador (vacía si está junto al repo de coordinación). No tiene issues, así que tampoco encargos: pídele trabajo con órdenes. Mueve las filas con ▲ y ▼; AJUSTES edita su nombre, qué hace su agente y su aspecto.",
+  "The rooms and their folders change on saving; the dispatchers look for them again at once. Sessions already open in a folder join its room once they are opened again.": "Las salas y sus carpetas cambian al guardar; los despachadores las vuelven a buscar en ese momento. Las sesiones ya abiertas en una carpeta se unen a su sala cuando se vuelven a abrir.",
+  "Its folder on each computer can be set once a dispatcher has run there.": "Su carpeta en cada ordenador se puede apuntar en cuanto un despachador haya funcionado en él.",
+  "full path, or empty if it is next to the coordination repo": "ruta completa, o vacía si está junto al repo de coordinación",
+  "Folder of {room} on {machine}": "Carpeta de {room} en {machine}",
+  "On {machine}": "En {machine}",
+  "found": "encontrada",
+  "not found on this computer": "no existe en este ordenador",
+  "a git repo with a remote: add it in REPOS by its remote": "es un repo con remote: añádelo en REPOS por su remote",
+  "it has the mark of another room": "tiene la marca de otra sala",
+  "found next to the coordination repo": "encontrada junto al repo de coordinación",
+  "The folder of {room} on {machine} is not a full path of a folder: write it from the drive, such as D:\\Work\\{room}.": "La carpeta de {room} en {machine} no es la ruta completa de una carpeta: escríbela desde la unidad, por ejemplo D:\\Trabajo\\{room}.",
+  "This station has no folder rooms yet.": "Esta estación todavía no tiene salas de carpeta.",
+  "A room whose agents work in a folder that is no git repo": "Una sala cuyos agentes trabajan en una carpeta que no es un repo de git",
+  "Folder of the room": "Carpeta de la sala",
+  "folder name": "nombre de la carpeta",
+  "FOLDER": "CARPETA",
+  "folder room, with no repo": "sala de carpeta, sin repo",
+  "The coordination has to be a repo, not a folder room.": "La coordinación tiene que ser un repo, no una sala de carpeta.",
+  "FOLDER ROOMS": "SALAS DE CARPETA",
+  "{remotes}: no server in the remote, so no clone matches it and its room shows as not cloned. Write the server in front, such as github.com/.": "{remotes}: el remote no lleva servidor, así que ningún clon coincide con él y su sala sale sin clonar. Escribe delante el servidor, por ejemplo github.com/.",
+  "\"{remote}\" is missing its server: write it as github.com/{remote}, or with the server it lives on.": "A «{remote}» le falta el servidor: escríbelo como github.com/{remote}, o con el servidor en el que esté.",
   "Rooms with no repo in the list: {rooms}": "Salas sin repo en la lista: {rooms}",
   "Their repo is not in CONFIGURE, REPOS: the sessions cannot ask them for work. Add the repo there, or save the configuration to take them off the decks.": "Su repo no está en CONFIGURAR → REPOS: las sesiones no pueden pedirles trabajo. Añade el repo ahí, o guarda la configuración para quitarlas de las cubiertas.",
   "The rooms {rooms} are on the decks but their repo is not in this list, so the station draws them and the sessions cannot ask them for work. Add their repo here, or save: saving takes them off the decks.": "Las salas {rooms} están en las cubiertas pero su repo no está en esta lista: la estación las pinta y las sesiones no pueden pedirles trabajo. Añade su repo aquí o guarda: al guardar salen de las cubiertas.",
@@ -4399,6 +4628,16 @@ const ES = {
   "No dispatcher has run on any computer yet.": "Todavía no ha funcionado ningún despachador en ningún ordenador.",
   "LOOKING…": "BUSCANDO…",
   "↻ FIND REPOS": "↻ BUSCAR REPOS",
+  "A repo or a folder room elsewhere on a computer: write its path under that computer, or its parent ending in \\* to take every folder inside. The paths are that computer's alone, and only say where to look: each folder is still known by its remote or its mark.": "Un repo o una sala de carpeta en otro sitio de un ordenador: escribe su ruta bajo ese ordenador, o la de su carpeta padre acabada en \\* para tomar todas las carpetas de dentro. Las rutas son solo de ese ordenador, y solo dicen dónde mirar: cada carpeta se sigue reconociendo por su remote o por su marca.",
+  "Also looks in (one path per line, of this computer; ending in \\* takes each folder inside):": "Busca también en (una ruta por línea, de este ordenador; acabada en \\* toma cada carpeta de dentro):",
+  "D:\\Clients\\*   (each folder inside)\nC:\\Users\\me\\OneDrive\\accounts   (this folder)": "D:\\Clientes\\*   (cada carpeta de dentro)\nC:\\Users\\yo\\OneDrive\\contabilidad   (esta carpeta)",
+  "Places where {machine} also looks": "Sitios donde {machine} también busca",
+  "not looked at yet": "aún sin mirar",
+  "not found": "no encontrada",
+  "SAVE PLACES": "GUARDAR SITIOS",
+  "Not a full path: {paths}. Write it from the drive, such as D:\\Clients.": "No es una ruta completa: {paths}. Escríbela desde la unidad, por ejemplo D:\\Clientes.",
+  "Places of {machine} saved: its dispatcher looks in them now.": "Sitios de {machine} guardados: su despachador ya busca en ellos.",
+  "They could not be saved ({code}). Try again.": "No se pudieron guardar ({code}). Inténtalo de nuevo.",
   "No dispatcher is running: the repos will be looked for when the coordination session wakes up.": "No hay ningún despachador funcionando: los repos se buscarán cuando despierte la sesión de coordinación.",
   "The repos could not be asked for ({code}). Try again.": "No se pudo pedir la búsqueda de repos ({code}). Inténtalo de nuevo.",
   "Add a repo from the template": "Añadir un repo de la plantilla",
@@ -4510,6 +4749,8 @@ async function start() {
   document.addEventListener("keydown", e => { if (e.key === "Escape" && !document.getElementById("modal").hidden) (modalOnClose || closeModal)(); });
   setView(view);
   setInterval(() => { if (!form) render(true); }, 30000);
+  // Back on the tab, what changed while it was hidden is drawn at once.
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && !form) { render(!isStationStale); isStationStale = false; } });
   let resizeTimer; window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 200); });
   const status = document.getElementById("status");
   const SIGNAL_LAMP_MS = 5 * 60_000;
@@ -4522,15 +4763,40 @@ async function start() {
   // them have (or after FIRST_DRAW_WAIT_MS, if one never comes), and the
   // snapshots of a burst are drawn together, so it never flickers through
   // several layouts in a row.
-  let lastSignature = "", drawTimer = 0;
+  let lastSignature = "", lastStationSignature = "", drawTimer = 0;
+  // What the station draws, and nothing else: a session's event times, the
+  // dispatcher's heartbeat or the text of an order change none of it, and
+  // redrawing for them would rebuild and measure every room and restart the
+  // animations. Those refresh the header and the bridge only.
+  const stationSignature = () => JSON.stringify([
+    viewSessions(Date.now()).map(s => [s.sessionId, s.folder, s.vstate, s.tool || "", s.detail || "", s.title || "", s.model || "", s.waitKind || "", (s.drones || []).join("|"), s.endReason || ""]),
+    orders.map(o => [o.id, o.status, o.folder, o.mode, o.proposedBy?.folder || "", o.approvedAt || 0, o.deliveredTo || "", o.handoff?.number || 0]),
+    dispatchers.map(d => [d.machine, Date.now() - (d.heartbeatAt || 0) < LEASE_MS]),
+    Object.entries(handoffs.byFolder || {}).map(([f, list]) => [f, (Array.isArray(list) ? list : []).map(i => [i.number, i.progressLabel || "", (i.assignees || []).length])]),
+    agentsCatalog.scannedAt || 0, departmentsVersion,
+  ]);
+  // A robot that stays where it is still learns when its session last did
+  // something, which tells it how long it has been idle.
+  const refreshActorSessions = () => {
+    for (const [id, a] of actors) {
+      const s = sessions.find(x => x.sessionId === id);
+      if (s && a.session) a.session = { ...a.session, lastEventAt: s.lastEventAt };
+    }
+  };
   const firstReads = new Set(["sessions", "orders", "dispatchers", "agents", "departments", "handoffs", "themes"]);
   const drawSoon = delay => {
     clearTimeout(drawTimer);
     drawTimer = setTimeout(() => {
       const signature = JSON.stringify([sessions, orders, dispatchers, agentsCatalog.scannedAt || 0, handoffs.scannedAt || 0, departmentsVersion]);
-      if (isStationReady && (signature === lastSignature || form)) return;
+      const stationSig = stationSignature();
+      // With the order form open the station stays as it is; it is redrawn
+      // when the form closes, if anything it shows changed meanwhile.
+      if (isStationReady && form) { if (stationSig !== lastStationSignature) isStationStale = true; return; }
+      if (isStationReady && signature === lastSignature) return;
       lastSignature = signature;
       if (!isStationReady) { isStationReady = true; lastStationRender = 0; }
+      else if (stationSig === lastStationSignature) { refreshActorSessions(); return render(true); }
+      lastStationSignature = stationSig;
       render();
     }, delay);
   };
@@ -4572,6 +4838,7 @@ async function start() {
       if (!REPOS.length) seedLoaded.then(() => { if (!REPOS.length && document.getElementById("modal").hidden) openConfig(); });
     }
   }, onError);
+  db.doc("config/places").onSnapshot(snap => { placesDoc = snap.exists && isPlainObject(snap.data()) ? snap.data() : {}; refreshRepoScan(); }, onError);
   db.doc("config/handoffs").onSnapshot(snap => { handoffs = snap.exists ? snap.data() : {}; touch("handoffs"); if (browse?.kind === "handoffs") renderBrowse(); }, onError);
 }
 start();

@@ -4,8 +4,12 @@
 // The background tasks that keep the dispatcher's session awake.
 export type KeeperTaskIds = string[]
 
+// The dispatcher of the plugin's latest copy in the session: an older copy's
+// dispatcher that finds another generation here stops.
+export type DispatcherGeneration = string
+
 declare module 'claude-code' {
   interface PluginState {
-    'agent-station': { keeperTaskIds: KeeperTaskIds }
+    'agent-station': { keeperTaskIds: KeeperTaskIds; dispatcherGeneration: DispatcherGeneration }
   }
 }

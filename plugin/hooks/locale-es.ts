@@ -11,9 +11,13 @@ const ES: Record<string, string> = {
     'Esta sesión es de la sala «{room}» (carpeta `{folder}`). Cada sala es un repo con su agente. Si una tarea corresponde a otra sala, puedes pedírsela a su agente.',
   '| Folder | Room | What it does |': '| Carpeta | Sala | Qué hace |',
   '(not described)': '(sin descripción)',
-  "Never write to another room's sessions directly (with SendMessage or a session tool): work between rooms goes only through `{tool}`, so that the user approves it.":
-    'No escribas nunca directamente a las sesiones de otra sala (con SendMessage o una herramienta de sesiones): el trabajo entre salas solo pasa por `{tool}`, para que el usuario lo apruebe.',
+  'To ask another session of your own room, use the same tool with your own folder: the station gives the order to another session of the room, never back to you.':
+    'Para pedirle algo a otra sesión de tu propia sala, usa la misma herramienta con tu propia carpeta: la estación le da la orden a otra sesión de la sala, nunca a ti.',
+  "Never write to another session directly (with SendMessage or a session tool), not even to one of your own room: work between sessions goes only through `{tool}`, so that the user approves it and the station shows it.":
+    'No escribas nunca directamente a otra sesión (con SendMessage o una herramienta de sesiones), tampoco a una de tu propia sala: el trabajo entre sesiones solo pasa por `{tool}`, para que el usuario lo apruebe y la estación lo muestre.',
   ' (this session)': ' (esta sesión)',
+  '{rooms} work in a folder with no repo, so they have no handoffs: ask them for work only with `{tool}`.':
+    '{rooms} trabajan en una carpeta sin repo, así que no tienen encargos: pídeles trabajo solo con `{tool}`.',
   "Each repo of {groups} is also a room, with the repo's name as its folder.": 'Además, cada repo de {groups} es una sala, con el nombre del repo como carpeta.',
   "To ask another room for work, use the tool `{tool}` with `folder` (the folder in the table), `text` (what you need and why, with the context it needs) and `reason` (why you ask). How to do it, and with which subagent, is for the room that takes it to decide; use `agent` only when the user asks for a particular subagent. The order stays proposed and is not delivered until the user approves it in the station. Your own room's subagents you launch directly with the Agent tool, without an order.":
     'Para pedir trabajo a otra sala usa la herramienta `{tool}` con `folder` (la carpeta de la tabla), `text` (qué necesitas y por qué, con el contexto necesario) y `reason` (por qué lo pides). Cómo hacerlo, y con qué subagente, lo decide la sala que lo recibe; usa `agent` solo si el usuario te pide un subagente concreto. La orden queda propuesta y no se entrega hasta que el usuario la aprueba en la estación. Los subagentes de tu propia sala los lanzas directamente con la herramienta Agent, sin orden.',
@@ -41,6 +45,8 @@ const ES: Record<string, string> = {
   'It is addressed to this session because it answers an order this session sent to that room. If it is the result of what you asked for, do not answer it with another order: go on with your work and tell the user what is needed. If it asks you for something more, {answer}':
     'Va dirigida a esta sesión porque responde a una orden que esta sesión envió a esa sala. Si es el resultado de lo que pediste, no la contestes con otra orden: sigue con tu trabajo y cuéntale al usuario lo que haga falta. Si te pide algo más, {answer}',
   'When you finish, {answer}': 'Cuando termines, {answer}',
+  'Order from another session of this same room, {session}, sent from {station} with the user\'s approval:':
+    'Orden de otra sesión de esta misma sala, {session}, enviada desde {station} con la aprobación del usuario:',
   'Order from the room "{room}" (folder `{folder}`), asked by {session} and sent from {station} with the user\'s approval:':
     'Orden de la sala «{room}» (carpeta `{folder}`), pedida por {session} y enviada desde {station} con la aprobación del usuario:',
   // the dispatcher's notes on orders
@@ -83,8 +89,8 @@ const ES: Record<string, string> = {
   // the status line
   'station: no connection ({error})': 'estación: sin conexión ({error})',
   // the permission prompts
-  'This agent wants to write to another Claude Code session directly, outside the station. Work between rooms goes through propose_order, which waits for your approval in the station: allow this only if you asked for it.':
-    'Este agente quiere escribir directamente a otra sesión de Claude Code, fuera de la estación. El trabajo entre salas pasa por propose_order, que espera tu aprobación en la estación: permítelo solo si se lo has pedido tú.',
+  'This agent wants to write to another Claude Code session directly, outside the station. Work between sessions, also of the same room, goes through propose_order, which waits for your approval in the station: allow this only if you asked for it.':
+    'Este agente quiere escribir directamente a otra sesión de Claude Code, fuera de la estación. El trabajo entre sesiones, también de la misma sala, pasa por propose_order, que espera tu aprobación en la estación: permítelo solo si se lo has pedido tú.',
   'The coordination session wants to republish the station page ({url}).': 'La sesión de coordinación quiere republicar la página de la estación ({url}).',
   'Allow it?': '¿Lo permites?',
   'Allow': 'Permitir',
@@ -108,8 +114,10 @@ const ES: Record<string, string> = {
     'Si la orden falla porque `gh` o `glab` no están instalados o no tienen login, no busques otra forma, y no escribas nunca un token en una orden, un fichero, un log ni un mensaje: dile al usuario qué falta y, mientras tanto, pide el trabajo con `{tool}`, con todo su contexto.',
   'Your room\'s handoffs are the open issues of its repo, `{repo}`: when the user speaks of handoffs, pending handoffs or the station\'s tasks, those issues are what they mean. To see them: `{list}`.':
     'Los encargos de tu sala son las issues abiertas de su repo, `{repo}`: cuando el usuario habla de encargos, encargos pendientes o tareas de la estación, se refiere a esas issues. Para verlas: `{list}`.',
-  'A handoff is in progress when it has the label `in progress` or someone assigned to it; the others are waiting. Before you start one that no station order gave you, mark it in progress (`<n>` is its number): `{mark}`.':
-    'Un encargo está en curso si tiene la etiqueta `in progress` o alguien asignado; los demás están esperando. Antes de empezar uno que no te haya llegado con una orden de la estación, márcalo en curso (`<n>` es su número): `{mark}`.',
+  'A handoff\'s state is its label, one at most: `To Do` (waiting, as a new issue starts) or `Doing` (someone or a session works on it). One with `Doing` or someone assigned is taken: do not start it. Before you start one that no station order gave you, mark it `Doing` (`<n>` is its number): `{mark}`.':
+    'El estado de un encargo es su etiqueta, como mucho una: `To Do` (esperando, como empieza una issue nueva) o `Doing` (alguien o una sesión trabaja en él). Uno con `Doing` o con alguien asignado está cogido: no lo empieces. Antes de empezar uno que no te llegó con una orden de la estación, márcalo `Doing` (`<n>` es su número): `{mark}`.',
+  "When its work is done, remove `Doing` and finish it as your project's own instructions say: with a label of their own for work that waits to reach production, or by closing the issue with the commit or the pull or merge request that solves it.":
+    'Cuando su trabajo esté terminado, quita `Doing` y termínalo como digan las instrucciones de tu proyecto: con una etiqueta propia para el trabajo que espera a llegar a producción, o cerrando la issue con el commit o la pull o merge request que lo resuelve.',
   'Its repo is on {host}, which has no handoffs: only GitHub and GitLab do. Orders reach it as usual.':
     'Su repo está en {host}, que no tiene encargos: solo los tienen GitHub y GitLab. Las órdenes le llegan igual.',
   "`{tool}` is not installed on {machine}, so this room's handoffs are not read. Install it, log in and reload the coordination session.":

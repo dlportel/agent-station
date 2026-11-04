@@ -30,8 +30,12 @@ page with sample data, nothing to install ([in Spanish](https://dlportel.github.
   the rooms, the repo of each, what each room's agent does, and which room it is in itself.
 - **Work between agents, both ways, with your approval.** An agent asks another repo's agent for
   something with the `propose_order` tool, and the answer goes back to the session that asked, so
-  agents can hold a conversation across repos. Every request waits on the page until you approve
+  agents can hold a conversation across repos. Sessions of the same room ask each other the same
+  way. Every request waits on the page until you approve
   it, and you can edit it first. Agents never message each other behind your back.
+- **Rooms with or without a repo.** A room is a repo by its origin remote, or a folder with no
+  repo at all, known by a mark the station writes in it. Either can live anywhere on a computer:
+  next to the coordination repo, or wherever you tell each computer to look.
 - **Every session at a glance.** Working, waiting for your permission or your answer, idle,
   without signal or closed, in the room of its repo. A session's card shows its tool, its model,
   its subagents, and a link that opens it.
@@ -62,9 +66,10 @@ Three pieces, and none of them names a station, a company or a repo:
 | The plugin, `plugin/` | Installed in Claude Code. In each session of a station's repos it writes that session's state to the station, gives the agent the station's map and the `propose_order` tool, and guards the station against agents writing to it. |
 | The coordination session | Any session opened in the repo you name as coordination. It runs the dispatcher, which delivers the approved orders on its machine and keeps the station's catalogs (subagents, open issues, models) up to date. |
 
-A session belongs to a station when the origin remote of its repo is one of the station's repos.
-Sessions of other repos, or outside a git repo, are ignored: the plugin never writes anywhere
-else.
+A session belongs to a station when the origin remote of its repo is one of the station's repos,
+or, in a folder with no remote, when the folder carries the mark of one of the station's folder
+rooms. Sessions anywhere else are ignored. The plugin writes nothing in your folders but that mark,
+and only in a folder you set for a folder room (see *Folder rooms and places*).
 
 ## Requirements
 
@@ -157,24 +162,43 @@ proposal shows on the bridge with why it is asked, who asks and where it would g
 reject it, or open it with SEE AND EDIT, which shows its text ready to change before you approve it,
 with its starting branch and its destination (folded on one line until you change it): as it was
 proposed, or any other, a particular session included. When a room answers an order it received, its answer goes back
-to the very session that asked. The coordination session only hands orders out: agents never ask
+to the very session that asked. A session that needs another session of its own room proposes the
+order to its own folder: it goes to another session of the room, never back to the one that asked. The coordination session only hands orders out: agents never ask
 it to forward anything.
 
 **Handoffs.** The dispatcher reads the open issues of each room's repo every fifteen minutes and
 the room's board shows how many there are; a click on it opens them. **ASSIGN TO AN AGENT**, on a handoff, opens the order form filled in
-to handle that issue: the agent first marks it in progress, with the label `in progress` on the
-issue (the command for its host comes in the order), so it shows so on GitHub or GitLab too. A repo whose issues you do not want on the station is set to NO under ISSUES
+to handle that issue: the agent first marks it `Doing` on the issue (the command for its host comes
+in the order), so it shows so on GitHub or GitLab too. A repo whose issues you do not want on the station is set to NO under ISSUES
 in CONFIGURE. When a room's issues cannot be read (no `gh` or `glab`, or no login), its board says
 why and on which machine. The bridge lists the five newest of each room; SEE THEM ALL, or a room's
 board, opens every open handoff with a text search, a filter by room and pages of fifteen.
 The dispatcher reads the 100 newest open issues of each repo; a room that reaches that shows `100+`.
-Each handoff shows whether it is OPEN or IN PROGRESS: in progress when the station gave an order
-for it (ASSIGN TO AN AGENT) that is on its way or delivered, when its issue has a label such as
-`in progress`, `doing`, `wip` or `en curso`, or when it is assigned to someone; its tooltip and its
-detail say which. The full list filters by that state too.
+Each handoff shows its state, which is its label, one at most. `To Do` while nobody is on it, as a
+new issue starts. `Doing` when someone or a session works on it: when its issue has that label (or
+a name teams give it, such as `in progress` or `wip`), when it is assigned to someone, or when the
+station gave an order for it that is on its way or delivered; its tooltip and its detail say which.
+Once its work is done the agent removes `Doing` and finishes it as the project's own instructions
+say: with a label of the team's own (such as `Pending production`), which the station shows as one
+more label, or by closing the issue. The full list filters by state too. On GitHub the dispatcher
+creates `To Do` and `Doing` in a repo that lacks them, and never changes one that exists; GitLab
+creates them when they are first used.
 ↻ UPDATE, in OPEN HANDOFFS and in the full list, asks the dispatcher to read them now instead of
 waiting for its fifteen minutes; it does within a minute, and the button's tooltip says when they
 were last read.
+
+**Folder rooms and places.** A room whose agents work in a folder with no git repo is added in
+CONFIGURE, FOLDERS with **+ ADD FOLDER ROOM**. It has no issues, so no handoffs; it takes orders
+like any room. The folder becomes the room by a mark, the file `.agent-station` inside it, with the
+room's random id: no folder is a room by its name. Under each folder room's row, set the folder's
+full path on each computer (empty when it sits next to the coordination repo); on SAVE, that
+computer's dispatcher writes the mark in it and the row says what it found. A folder that is a git
+repo with a remote, or that carries another room's mark, is never marked. Repos that do not sit
+next to the coordination repo are found the same way: in CONFIGURE, REPOS, under each computer,
+list the folders where its dispatcher also looks (a folder, or a parent ending in `\*` for every
+folder inside). Paths belong to their computer: the station's configuration never holds one, and
+each dispatcher reads only its own. A path only says where to look; each folder is still known by
+its remote or its mark, and network paths are refused.
 
 **All orders.** RECENT ORDERS on the bridge shows the last six, and folds (▾) down to SEE ALL alone; SEE ALL opens every order the
 station keeps (the last 30 days), newest first, with a text search over the order, its reason, its
@@ -215,14 +239,17 @@ configuration panel:
 | `theme` | The scenery: `space`, the default, or a theme of your own (see *Themes*). |
 | `coordination` | The repo whose sessions coordinate the station. |
 | `keepAwake` | `true` keeps the coordination session from being stopped while it is idle, so orders are delivered at any hour (KEEP AWAKE in the panel). Off by default. It works only with the coordination session in bypass-permissions mode; the station says so when it is in another. |
-| `repos` | The station's repos by origin remote: `{ "remote": "github.com/org/repo", "folder": "room" }`, or a remote ending in `/*` for every repo of a group. `"issues": false` leaves a repo's (or a group's) issues off the station. |
+| `repos` | The station's repos by origin remote: `{ "remote": "github.com/org/repo", "folder": "room" }`, or a remote ending in `/*` for every repo of a group. `"issues": false` leaves a repo's (or a group's) issues off the station. A folder room is an entry with no remote: `{ "folder": "room", "local": "<id>" }`. |
 | `departments` | Each room: `name`, `description` (what its agent does, which the other agents read), `place`, `accent`, `wall`, `floor`, `furniture`, `accessory`, `body`, `antenna`, `weight`. |
 | `layout` | The decks: `{ "label": "DECK", "items": ["room", "#canteen", "#hangar"] }`. `#canteen` and `#hangar` are shared rooms where idle robots rest and recharge; one on no deck shows after the decks. |
 | `offStation` | Shared rooms taken off the station, such as `["#canteen"]`. Every station has both unless this lists them. Their deck, and their name, the line under it, their colours and floor (SETTINGS), are set from their rows under SHARED ROOMS in DECKS (`departments["#canteen"]` and `departments["#hangar"]`). |
 | `aliases` | Other URLs of the same artifact. |
 
-The panel has four tabs. GENERAL, REPOS and DECKS edit the station; VIEW sets how this browser draws
-it (the station's, the bridge's and the dialogs' sizes, the light, the legend), kept in this browser alone. They edit all of it: the title, the theme, the language and the coordination; one row per
+Each computer's paths, kept apart since they belong to it, are in `config/places`: `byMachine`
+(where its dispatcher also looks) and `folderRooms` (each folder room's folder on it).
+
+The panel has five tabs. GENERAL, REPOS, FOLDERS (rooms whose agents work in a folder with no repo) and DECKS edit the station; VIEW sets how this browser draws
+it (the station's, the bridge's and the dialogs' sizes, the light, the legend), kept in this browser alone; the station's automatic size is the largest that fits the window, from 50% to 150%. They edit all of it: the title, the theme, the language and the coordination; one row per
 repo with its room's name and deck; each room's look in a side panel with a live preview; and the
 decks themselves. The page reads a malformed configuration without breaking, so the panel is also
 the way to repair one. When a `seed.json` is published next to the page, an empty station can start
@@ -271,6 +298,12 @@ The plugin reports as little as it can. A session's state is its title, its fold
 machine's name and what its current tool touches, kept small on purpose: a file's name without its
 folder, a search pattern, a command's program and its first plain word (never its flags, paths,
 quotes or values), a site's host.
+
+Outside the station's database, the plugin writes one thing: a folder room's mark, `.agent-station`
+(the station's URL and the room's id), in the folder you set for that room on that computer, and
+never in a folder that is a git repo with a remote or that carries another room's mark. Paths that
+point to a network share are refused, so no dispatcher reaches another server with your
+credentials.
 
 Agents can read the station but never write it. Their writes to a station are refused, except the
 coordination session's writes to orders and to the configuration, and its republishing of its own

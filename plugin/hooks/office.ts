@@ -23,6 +23,10 @@ export type EngineIo = {
   // The host's clock, which tests can move; Date.now otherwise.
   now?: () => Promise<number>
   writeKeepers?: (ids: string[]) => Promise<void>
+  // The generation of the session's dispatcher, kept in the host's state so a
+  // reload of the plugin can tell the older loop to stop.
+  readDispatcherGeneration?: () => Promise<string | undefined>
+  writeDispatcherGeneration?: (generation: string) => Promise<void>
 }
 
 export type OfficeReply = {

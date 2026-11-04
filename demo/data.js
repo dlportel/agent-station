@@ -8,7 +8,7 @@
   const now = Date.now();
   // What the page changed in a session (disconnecting it) stays on top of its made-up fields.
   const sessionPatches = {};
-  const session = (id, folder, state, model, extra) => ({ id, data: () => ({ folder, title: id, state, model, lastEventAt: now - 20000, startedAt: now - 3600000, machine: "LAPTOP", modVersion: "1.2.80", drones: [], ...extra, ...sessionPatches[id] }) });
+  const session = (id, folder, state, model, extra) => ({ id, data: () => ({ folder, title: id, state, model, lastEventAt: now - 20000, startedAt: now - 3600000, machine: "LAPTOP", modVersion: "1.2.94", drones: [], ...extra, ...sessionPatches[id] }) });
   const sessions = [
     session("web-1", "web", "working", "claude-opus-5-5", { title: "Pricing page redesign", tool: "Edit", detail: "pricing.astro" }),
     session("web-2", "web", "waiting", "claude-sonnet-5-5", { title: "Blog images", waitKind: "permission", tool: "Bash", detail: "npm" }),
@@ -36,7 +36,8 @@
   const snapDoc = d => ({ exists: !!d, data: () => d, metadata: { fromCache: false } });
   const language = new URLSearchParams(location.search).get("lang") === "es" ? "es" : "en";
   let departments = null;
-  const configListeners = [], orderListeners = [], sessionListeners = [];
+  let places = null;
+  const configListeners = [], orderListeners = [], sessionListeners = [], placesListeners = [];
   const notifyOrders = () => orderListeners.forEach(cb => cb(snapCol([...orders])));
   const notifySessions = () => sessionListeners.forEach(cb => cb(snapCol([...sessions])));
   // What the coordination session does with an order: hand it to an open
@@ -67,6 +68,8 @@
     } }),
     doc: path => ({
       onSnapshot: cb => { (async () => {
+        // The station's places, kept like the configuration while the tab is open.
+        if (path === "config/places") { placesListeners.push(cb); return cb(snapDoc(places)); }
         if (path !== "config/departments") return cb(snapDoc(null));
         if (!departments) departments = { ...(await (await fetch("../examples/seed.json")).json()), language };
         configListeners.push(cb);
@@ -82,7 +85,9 @@
         notifyOrders();
         if (!wasPending && o.record.status === "pending") deliverLater(o);
       },
-      set: async doc => { if (path === "config/departments") { departments = JSON.parse(JSON.stringify(doc)); configListeners.forEach(cb => cb(snapDoc(departments))); } },
+      set: async doc => {
+        if (path === "config/places") { places = JSON.parse(JSON.stringify(doc)); placesListeners.forEach(cb => cb(snapDoc(places))); return; }
+        if (path === "config/departments") { departments = JSON.parse(JSON.stringify(doc)); configListeners.forEach(cb => cb(snapDoc(departments))); } },
     }),
   }) };
 })();

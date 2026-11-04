@@ -1,7 +1,7 @@
 import type { AskOptions, Register } from 'claude-code'
 import { artifactKey, callOffice, isOfficeCall, mcpText, officeCallKey, parseDocs, toolDetail, type EngineIo, type OfficeDoc } from './office'
-import { findRepos, startDispatcherInBackground, type DispatcherContext } from './dispatcher'
-import { coordinationPeerNote, folderForRemote, isBranchName, joinPath, LANGS, readCurrentBranch, readOriginRemoteAnswer, readStationConfig, roomsLine, stationMap, stationRooms, stationUrls, isDirectSessionMessage, readOrderMark, type Lang, type Station } from './station'
+import { findRepos, isAbsolutePlace, startDispatcherInBackground, type DispatcherContext } from './dispatcher'
+import { coordinationPeerNote, folderForMark, folderForRemote, folderMarkText, isFolderName, MARK_FILE, parentOf, readFolderMark, readFolderMarkAt, readMainRepoTop, readOriginRemote, isBranchName, joinPath, LANGS, readCurrentBranch, readOriginRemoteAnswer, readStationConfig, roomsLine, stationMap, stationRooms, stationUrls, isDirectSessionMessage, readOrderMark, type Lang, type Station } from './station'
 import { tx } from './locale-es'
 
 // Observer only: every hook hands the event on unchanged and never waits on
@@ -33,8 +33,9 @@ const STATION_RETRY_MS = [0, 60_000, 5 * 60_000, 15 * 60_000]
 // once it has kept failing for this long.
 const JOIN_RETRY_MS = 60_000
 // The folders where the desktop app keeps sessions ready before it gives them
-// a project (~/.claude-spares/spare-…).
-const SPARE_FOLDER = /[\\/]\.claude-spares([\\/]|$)/
+// a project: ~/.claude/spares/spare-…, and ~/.claude-spares/spare-… in older
+// versions of the app.
+const SPARE_FOLDER = /[\\/]\.claude(-spares|[\\/]spares)([\\/]|$)/
 const QUESTION_TOOLS = new Set(['AskUserQuestion'])
 // How the station says that a document is not there.
 const MISSING_DOC = /no (such )?documents?|0 documents|not found|does not exist/i
@@ -83,6 +84,22 @@ const FIND_REPOS_SPEC = {
   inputSchema: { type: 'object', properties: {} },
   isDeferred: false,
 }
+// Also only for the coordination session: it writes a folder room's mark,
+// which nothing else may do, when the user asks for it.
+const MARK_FOLDER_TOOL_NAME = 'mark_folder_room'
+const MARK_FOLDER_SPEC = {
+  name: MARK_FOLDER_TOOL_NAME,
+  description: `Mark a folder as one of the station's folder rooms: a room whose agents work in a folder that is no git repo. It writes the file ${MARK_FILE} in that folder, with the station's URL and the room's id, so the sessions opened there join that room and the dispatcher can open new sessions in it. Use it only when the user asks you to mark a folder as a room. The room must already be a folder room in CONFIGURE, REPOS. Input: room (the room's folder, as CONFIGURE lists it) and, only if the folder is named otherwise or is elsewhere, directory: the name of the folder next to the coordination repo, or the full path of a folder of this computer. A folder that is a git repo with an origin remote is refused: such a room is added by its remote.`,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      room: { type: 'string', description: "The folder room, by its folder as the station's REPOS list shows it." },
+      directory: { type: 'string', description: 'The folder to mark, when it is not the one named room next to the coordination repo: its name there, or its full path on this computer.' },
+    },
+    required: ['room'],
+  },
+  isDeferred: false,
+}
 const ORDER_MODES = new Set(['any', 'existing', 'new'])
 // The longest text and reason an order takes. An order is never cut: a longer
 // one is refused whole, with its length, so the agent shortens or splits it.
@@ -90,6 +107,9 @@ const ORDER_MODES = new Set(['any', 'existing', 'new'])
 const ORDER_TEXT_MAX = 20_000
 const ORDER_REASON_MAX = 1_000
 const MAP_WAIT_MS = 8_000
+// How long a station call of the plugin's own keeps its mark at most: twice
+// the time callOffice waits for an answer.
+const OWN_CALL_MARK_MS = 16_000
 // How long a notice for the user stays on screen.
 const TOAST_MS = 30_000
 // The app stops the process of a session that has been idle for a while, and
@@ -187,6 +207,7 @@ export const register: Register = (on, options) => {
   let areSessionToolsRegistered = false
   let proposeToolName = ''
   let findReposToolName = ''
+  let markFolderToolName = ''
   // The dispatcher's context in a coordination session, for find_repos.
   let dispatcherContext: DispatcherContext | undefined
   // The map of the station this session belongs to. It goes with the session's
@@ -209,22 +230,36 @@ export const register: Register = (on, options) => {
   let classicHooks: 'unknown' | 'run' | 'skipped' = 'unknown'
   // Settles once the session knows whether it belongs to a station (and, if it
   // does, has its map), so the first message waits for that and no longer.
+  // Each attempt to join waits afresh: a session the app moved from its spare
+  // folder to its project joins on a later attempt, and the message that
+  // starts it must wait for that one, not for the answer of the spare folder.
   let markMapSettled: () => void = () => {}
-  const mapSettled = new Promise<void>(resolve => { markMapSettled = resolve })
+  let mapSettled = new Promise<void>(resolve => { markMapSettled = resolve })
+  const awaitNextJoin = () => { mapSettled = new Promise<void>(resolve => { markMapSettled = resolve }) }
   const ownCallsInFlight = new Map<string, number>()
   const isOwnCall = (input: any) => (ownCallsInFlight.get(officeCallKey(input)) ?? 0) > 0
-  async function callToolAsMod(callTool: (call: any) => Promise<unknown>, call: Record<string, unknown>) {
+  async function callToolAsMod(callTool: (call: any) => Promise<unknown>, call: Record<string, unknown>, sleep?: (ms: number) => Promise<unknown>) {
     // Only station calls are tracked: the key of any other call (the keeper's
     // Bash, say) would match an agent's station call with the same empty fields.
     if (call.tool !== 'ArtifactData') return callTool(call)
     const key = officeCallKey(call)
     ownCallsInFlight.set(key, (ownCallsInFlight.get(key) ?? 0) + 1)
-    try {
-      return await callTool(call)
-    } finally {
+    let isReleased = false
+    const release = () => {
+      if (isReleased) return
+      isReleased = true
       const left = (ownCallsInFlight.get(key) ?? 1) - 1
       if (left > 0) ownCallsInFlight.set(key, left)
       else ownCallsInFlight.delete(key)
+    }
+    // A call the host never answers lets go of its mark anyway: its own hooks
+    // ran when it started, and a mark kept for good would let the same call
+    // from the agent pass as the plugin's.
+    if (sleep) void sleep(OWN_CALL_MARK_MS).then(release, release)
+    try {
+      return await callTool(call)
+    } finally {
+      release()
     }
   }
 
@@ -282,8 +317,33 @@ export const register: Register = (on, options) => {
         const answer = await remoteRead
         if (!answer.remote) {
           if (answer.isFinal) {
+            // A folder with no remote may be a folder room, known by its mark.
+            const mark = await readFolderMark(io, cwd)
+            if (mark) {
+              const { read } = await loadStations(io)
+              for (const [index, candidate] of read.entries()) {
+                if (!candidate) {
+                  isWorthRetrying = true
+                  joinProblem = 'station'
+                  joinProblemStation = urls[index] ?? ''
+                  logJoin(`cwd ${cwd}; no origin remote; mark in ${mark.dir}; waiting for ${joinProblemStation}, which comes first in the stations option`)
+                  return null
+                }
+                const folder = folderForMark(mark, candidate)
+                if (!folder) continue
+                station = candidate
+                officeUrl = candidate.officeUrl
+                ownKeys = candidate.officeKeys
+                joinProblem = ''
+                logJoin(`cwd ${cwd}; no origin remote; mark in ${mark.dir}; joined folder room ${folder} of ${candidate.officeUrl}`)
+                return { station: candidate, folder }
+              }
+              joinProblem = ''
+              logJoin(`cwd ${cwd}; no origin remote; the mark in ${mark.dir} names no folder room of the stations: this session belongs to no station while it stays there`)
+              return null
+            }
             joinProblem = ''
-            logJoin(`cwd ${cwd}: no origin remote, or not a git repo: this session belongs to no station while it stays there`)
+            logJoin(`cwd ${cwd}: no origin remote, or not a git repo, and no folder room's mark: this session belongs to no station while it stays there`)
             return null
           }
           isWorthRetrying = true
@@ -341,8 +401,17 @@ export const register: Register = (on, options) => {
     membershipCwd = undefined
   }
 
-  async function registerSessionTools(engine: EngineIo, calls: SessionCalls) {
-    if (areSessionToolsRegistered) return
+  // One attempt at a time: two at once would register the tools twice.
+  let registering: Promise<void> | undefined
+  function registerSessionTools(engine: EngineIo, calls: SessionCalls): Promise<void> {
+    if (areSessionToolsRegistered) return Promise.resolve()
+    if (!registering) {
+      awaitNextJoin()
+      registering = registerSessionToolsNow(engine, calls).finally(() => { registering = undefined })
+    }
+    return registering
+  }
+  async function registerSessionToolsNow(engine: EngineIo, calls: SessionCalls) {
     try {
       await forgetIfMoved(engine)
       const member = await resolveMembership(engine)
@@ -371,6 +440,8 @@ export const register: Register = (on, options) => {
       if (member.station.coordination && member.folder === member.station.coordination) {
         const found: any = await calls.registerTool(FIND_REPOS_SPEC).catch(() => undefined)
         findReposToolName = String(found?.tool ?? (pluginName ? `mcp__${pluginName}__${FIND_REPOS_TOOL_NAME}` : ''))
+        const mark: any = await calls.registerTool(MARK_FOLDER_SPEC).catch(() => undefined)
+        markFolderToolName = String(mark?.tool ?? (pluginName ? `mcp__${pluginName}__${MARK_FOLDER_TOOL_NAME}` : ''))
       }
       await calls.registerCommand(coordinatorCommand(member.station.language)).catch(() => {})
       areSessionToolsRegistered = true
@@ -526,6 +597,7 @@ export const register: Register = (on, options) => {
     if (e.tool === DESKTOP_SESSION_TOOL || isOwnKeeperCall(e.tool, e)) return next(e)
     if (isProposeTool(e.tool)) return { result: await proposeOrder(e) } as any
     if (findReposToolName && e.tool === findReposToolName) return { result: await findReposForAgent() } as any
+    if (markFolderToolName && e.tool === markFolderToolName) return { result: await markFolderRoomForAgent(e) } as any
     const isQuestion = QUESTION_TOOLS.has(e.tool)
     const droneKey = SUBAGENT_TOOLS.has(e.tool) ? String((e as any).tool_use_id ?? Math.random()) : ''
     if (droneKey) activeDrones.set(droneKey, String((e as any).subagent_type || 'general-purpose'))
@@ -627,7 +699,7 @@ export const register: Register = (on, options) => {
   // has not answered yet).
   function confirmationFor(tool: string, input: any): string | undefined {
     if (station && isDirectSessionMessage(tool, input)) {
-      return tx(station.language, 'This agent wants to write to another Claude Code session directly, outside the station. Work between rooms goes through propose_order, which waits for your approval in the station: allow this only if you asked for it.')
+      return tx(station.language, 'This agent wants to write to another Claude Code session directly, outside the station. Work between sessions, also of the same room, goes through propose_order, which waits for your approval in the station: allow this only if you asked for it.')
     }
     if (isArtifactPageChange(tool, input) && isStationUrl(input) && isOwnStationPageChange(input)) {
       const isDelete = String(input?.action ?? 'publish') === 'delete'
@@ -962,6 +1034,12 @@ export const register: Register = (on, options) => {
         io.toast(tx(member.station.language, 'Agent station: this coordination session runs in the {mode} permission mode. The station works fully only with permissions bypassed; in auto mode, KEEP AWAKE cannot start.', { mode: desktop.permissionMode }))
       }
       if (isCoordination && desktop?.sessionId) {
+        // This copy's generation goes into the host's state, which outlives a
+        // reload of the plugin: a dispatcher that finds another one there
+        // belongs to an older copy, and stops.
+        const generation = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+        await io.writeDispatcherGeneration?.(generation).catch(() => {})
+        const engine = io
         dispatcherContext = {
           io,
           officeUrl,
@@ -969,6 +1047,10 @@ export const register: Register = (on, options) => {
           machine,
           ownSessionId: docId,
           isAlive: () => isReporting && !isSessionOver,
+          isCurrent: async () => {
+            const held = await engine.readDispatcherGeneration?.()
+            return held === undefined || held === generation
+          },
           setKeepAwake,
         }
         startDispatcherInBackground(dispatcherContext)
@@ -988,6 +1070,54 @@ export const register: Register = (on, options) => {
     const found = rooms.length ? rooms.map(room => `${room.folder} (${room.path})`).join(', ') : 'none'
     const absent = missing.length ? ` Rooms of the station with no clone next to the coordination repo on ${machine}: ${missing.join(', ')}. Orders that need a new session there cannot be delivered on this machine until they are cloned.` : ' Every room of the station has its clone here.'
     return `Looked for the station's repos again on ${machine}. Rooms found: ${found}.${absent} The station shows this list in CONFIGURE, REPOS.`
+  }
+
+  // mark_folder_room, for the coordination session's agent: writes the mark of
+  // a folder room in a folder next to the coordination repo, then looks for
+  // the station's rooms again so the dispatcher knows it at once. It never
+  // marks a repo with a remote, nor a folder another room's mark already holds.
+  async function markFolderRoomForAgent(input: any): Promise<string> {
+    if (!dispatcherContext || !io || !officeUrl) return 'The dispatcher has not started in this session yet: it starts once the session has joined its station. Try again in a moment.'
+    const engine = io
+    const fresh = await readStationConfig(engine, officeUrl).catch(() => undefined)
+    if (!fresh) return 'Not marked: the station did not answer. Try again in a moment.'
+    const roomName = String(input.room ?? '').trim()
+    const room = fresh.folderRooms.find(candidate => candidate.folder === roomName)
+    if (!room) {
+      const listed = fresh.folderRooms.map(candidate => candidate.folder).join(', ')
+      return `Not marked: the station has no folder room "${roomName.slice(0, 100)}". ${listed ? `Its folder rooms are: ${listed}.` : 'It has none yet.'} The user adds one in CONFIGURE, REPOS, with + ADD FOLDER ROOM, and saves.`
+    }
+    // A folder next to the coordination repo by its name, or any folder of
+    // this computer by its full path (found by the dispatcher once its place
+    // is listed for this computer in CONFIGURE, REPOS).
+    const directory = String(input.directory ?? '').trim() || room.folder
+    let path = ''
+    if (isAbsolutePlace(directory) && !/[\\/]\*$/.test(directory)) {
+      const isThere = await engine.listDir(directory).then(() => true, () => false)
+      if (!isThere) return `Not marked: there is no folder ${directory} on this computer. Create it first, or give the path it has.`
+      path = directory.replace(/[\\/]+$/, '')
+    } else {
+      if (!isFolderName(directory)) return 'Not marked: directory is the name of a folder next to the coordination repo, or the full path of a folder of this computer.'
+      const top = await readMainRepoTop(engine, await engine.cwd())
+      if (!top) return 'Not marked: git could not tell where the coordination repo is.'
+      const parent = parentOf(top)
+      const entries = await engine.listDir(parent).catch(() => [] as Array<{ name: string; kind: string }>)
+      if (!entries.some(entry => entry.kind === 'dir' && entry.name === directory)) return `Not marked: there is no folder "${directory}" in ${parent}. Create it there first, or give its full path.`
+      path = joinPath(parent, directory)
+    }
+    const remote = await readOriginRemote(engine, path)
+    if (remote) return `Not marked: ${path} is a git repo with the remote ${remote}. A room with a repo is added in CONFIGURE, REPOS by its remote, not as a folder room.`
+    const existing = await readFolderMarkAt(engine, path)
+    if (existing && folderForMark(existing, fresh) === room.folder) return `${path} is already marked as the folder room ${room.folder}.`
+    if (existing) return `Not marked: ${path} already has a mark (${MARK_FILE}) for another room or station. Remove that file first if the folder is to be this room, and only if the user says so.`
+    try {
+      await engine.writeText(joinPath(path, MARK_FILE), folderMarkText(fresh.officeUrl, room.id))
+    } catch (error) {
+      return `Not marked: the file could not be written in ${path}: ${String((error as Error)?.message ?? error).slice(0, 200)}`
+    }
+    const { rooms } = await findRepos(dispatcherContext)
+    const isFound = rooms.some(found => found.folder === room.folder)
+    return `Marked ${path} as the folder room ${room.folder} (file ${MARK_FILE}).${isFound ? ' The dispatcher found it: orders for the room reach it from now on.' : ' The dispatcher did not find it: if the folder is not next to the coordination repo, the user adds its path (or its parent, ending in \\*) under this computer in CONFIGURE, REPOS, REPOS ON EACH COMPUTER.'} A session already open in that folder joins the room once it is opened again.`
   }
 
   async function proposeOrder(input: any): Promise<string> {
@@ -1047,6 +1177,7 @@ export const register: Register = (on, options) => {
   async function findReplyTarget(folder: string, sessionId: string): Promise<OfficeDoc | string | { gone: { sessionId: string; title: string } } | undefined> {
     if (!io) return undefined
     if (sessionId) {
+      if (sanitizeDocId(sessionId) === docId) return 'Not proposed: session_id is this same session. Leave it out to give the order to another session of the room.'
       const reply = await callOffice(io, officeUrl, { action: 'get', collection: 'sessions', doc_id: sanitizeDocId(sessionId) })
       const session = reply.isOk ? parseDocs(reply.text)[0] : undefined
       if (!session || session.data.folder !== folder) return `Not proposed: the station has no session "${sessionId}" in ${folder}.`
@@ -1272,9 +1403,9 @@ type SessionCalls = {
   pluginName: () => Promise<string | undefined>
 }
 
-function engineIoFor($: any, callToolAsMod: (callTool: (call: any) => Promise<unknown>, call: Record<string, unknown>) => Promise<unknown>): EngineIo {
+function engineIoFor($: any, callToolAsMod: (callTool: (call: any) => Promise<unknown>, call: Record<string, unknown>, sleep?: (ms: number) => Promise<unknown>) => Promise<unknown>): EngineIo {
   return {
-    callTool: call => callToolAsMod(c => $.tool.call(c as any), call),
+    callTool: call => callToolAsMod(c => $.tool.call(c as any), call, ms => $.clock.sleep(ms)),
     sleep: ms => $.clock.sleep(ms),
     status: text => $.ui.status(text),
     toast: text => $.ui.toast(text, { timeoutMs: TOAST_MS }),
@@ -1296,6 +1427,11 @@ function engineIoFor($: any, callToolAsMod: (callTool: (call: any) => Promise<un
       return Array.isArray(held?.value) ? held.value.map(String) : []
     },
     writeKeepers: async ids => { await $.state.set({ plugin: 'agent-station', key: 'keeperTaskIds' } as const, ids) },
+    readDispatcherGeneration: async () => {
+      const held: any = await $.state.get({ plugin: 'agent-station', key: 'dispatcherGeneration' } as const)
+      return typeof held?.value === 'string' ? held.value : undefined
+    },
+    writeDispatcherGeneration: async generation => { await $.state.set({ plugin: 'agent-station', key: 'dispatcherGeneration' } as const, generation) },
   }
 }
 
