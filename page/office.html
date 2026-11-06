@@ -441,6 +441,8 @@ textarea { resize: vertical; min-height: 84px; }
 .hstate.open { color: #ffcf6e; }
 .hstate.progress { color: var(--cyan); }
 .hlabel { font: 8px/1 var(--font-pixel); padding: 1px 4px; margin-right: 6px; color: #d9cfb8; background: rgba(255, 255, 255, .08); border: 1px solid #6e6450; white-space: nowrap; }
+.hlabel.urgent { color: #fff; background: #b3261e; border-color: #ff5a4e; }
+.board-urgent { font-size: 8px; color: #fff; background: #b3261e; padding: 1px 4px; }
 .box-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .box-fold { min-height: 0; height: 24px; padding: 0 8px; font-size: 12px; line-height: 1; }
 .box-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-self: start; }
@@ -1141,7 +1143,7 @@ function knownModels() {
 const demo = { sessions: [], orders: [], phase: null, sleepy: false, n: 0 };
 // This page's version, the engine's: the sync refuses a page whose version is
 // not the engine's, so the header always says which one is published.
-const PAGE_VERSION = "1.2.94";
+const PAGE_VERSION = "1.2.96";
 // How this viewer wants the page drawn (CONFIGURE, VIEW), kept in their
 // browser, since each screen wants its own: the bridge's and the station's
 // sizes ("auto" or a fixed zoom, texts included), the dialogs' size, the
@@ -1616,7 +1618,7 @@ function handoffBox(now) {
     const d = deptOf(f), list = byFolder[f];
     box.append(el("div", { class: "todo-dept", style: { "--acc": d.accent } },
       el("div", { class: "todo-dept-head" }, el("span", { text: d.name.toUpperCase() }), el("span", { text: handoffCount(list, f) })),
-      list.slice(0, HANDOFFS_PER_ROOM).map(i => handoffRow(f, i, now)),
+      urgentFirst(list).slice(0, HANDOFFS_PER_ROOM).map(i => handoffRow(f, i, now)),
       list.length > HANDOFFS_PER_ROOM ? el("button", { class: "btn btn-ghost box-more", type: "button", onclick: () => openBrowse({ kind: "handoffs", filter: f }) }, tr("{n} MORE IN {room}", { n: list.length - HANDOFFS_PER_ROOM, room: d.name.toUpperCase() })) : null));
   }
   return box;
@@ -1678,9 +1680,14 @@ function handoffStateChip(folder, i) {
 
 // The repo's own labels of a handoff (an area, a component), as the dispatcher kept them.
 const handoffLabels = i => Array.isArray(i.labels) ? i.labels.filter(l => typeof l === "string" && l) : [];
+// A label that says the handoff is urgent, as teams name it: drawn in red,
+// and its handoffs go first in their room's list on the bridge.
+const URGENT_LABEL = /^(priority[:/ ]*)?(urgent|urgente|critical|cr[ií]tico|blocker|p0)$/i;
+const isUrgentHandoff = i => handoffLabels(i).some(l => URGENT_LABEL.test(l));
+const urgentFirst = list => [...list].sort((a, c) => Number(isUrgentHandoff(c)) - Number(isUrgentHandoff(a)));
 function handoffRow(folder, i, now, onOpen) {
   return el("div", { class: "todo-item clickable", role: "button", tabindex: "0", title: tr("See the handoff"), onclick: onOpen || (() => openHandoffDetail(folder, i)) },
-    el("span", { class: "t" }, handoffStateChip(folder, i), ...handoffLabels(i).map(l => el("b", { class: "hlabel", text: l })), `#${i.number} ${i.title}`),
+    el("span", { class: "t" }, handoffStateChip(folder, i), ...handoffLabels(i).map(l => el("b", { class: URGENT_LABEL.test(l) ? "hlabel urgent" : "hlabel", text: l })), `#${i.number} ${i.title}`),
     el("span", { class: "a", text: i.createdAt ? ago(Date.parse(i.createdAt), now) : "" }),
     i.from ? el("span", { class: "m", text: tr("Asked by {who}", { who: i.from }) }) : null);
 }
@@ -1699,12 +1706,14 @@ function board(folder) {
   const list = showsIssues(folder) ? handoffs.byFolder?.[folder] || [] : [];
   if (!list.length) return null;
   const working = list.filter(i => handoffState(folder, i) === "doing").length;
+  const urgent = list.filter(isUrgentHandoff).length;
   const count = list.length + (list.length >= ISSUES_CAP ? "+" : "");
   return el("button", { class: "board", type: "button",
     title: `${pl(list.length, "open handoff", "open handoffs")}${working ? " · " + tr("{n} in progress", { n: working }) : ""}; ${tr("See all the handoffs of {room}", { room: deptOf(folder).name })}`,
     onclick: ev => { ev.stopPropagation(); openBrowse({ kind: "handoffs", filter: folder }); } },
     el("span", { class: "board-title pixel", text: `${tr("HANDOFFS")} ${count}` }),
-    working ? el("span", { class: "board-progress pixel", text: tr("{n} in progress", { n: working }) }) : null);
+    working ? el("span", { class: "board-progress pixel", text: tr("{n} in progress", { n: working }) }) : null,
+    urgent ? el("span", { class: "board-urgent pixel", text: tr("{n} urgent", { n: urgent }) }) : null);
 }
 
 // Orders an agent proposed travel by pneumatic tube from its room to the target
@@ -3798,7 +3807,7 @@ function placesEditor(d) {
   const scanned = new Map((Array.isArray(d.places) ? d.places : []).filter(isPlainObject).map(p => [p.path, p]));
   const text = placesDraft[machine] ?? saved.join("\n");
   const isChanged = text.split("\n").map(l => l.trim()).filter(Boolean).join("\n") !== saved.join("\n");
-  const area = el("textarea", { id: `cfg-places-${machine}`, rows: String(Math.max(2, Math.min(6, text.split("\n").length + 1))), spellcheck: "false", placeholder: tr("D:\\Clients\\*   (each folder inside)\nC:\\Users\\me\\OneDrive\\accounts   (this folder)"), "aria-label": tr("Places where {machine} also looks", { machine }), oninput: e => { placesDraft[machine] = e.target.value; placesErr[machine] = ""; } });
+  const area = el("textarea", { id: `cfg-places-${machine}`, rows: String(Math.max(2, Math.min(6, text.split("\n").length + 1))), spellcheck: "false", placeholder: tr("D:\\Clients\\*   (each folder inside)\nD:\\Projects\\notes   (this folder)"), "aria-label": tr("Places where {machine} also looks", { machine }), oninput: e => { placesDraft[machine] = e.target.value; placesErr[machine] = ""; } });
   area.value = text;
   area.addEventListener("change", refreshRepoScan);
   return el("div", { class: "places" },
@@ -4230,6 +4239,7 @@ const ES = {
   "In progress": "En curso",
   "Open, nobody on it yet": "Abierto, nadie trabaja en él todavía",
   "{n} in progress": "{n} en curso",
+  "{n} urgent": "{n} urgentes",
   "order delivered to \"{title}\"": "orden entregada a «{title}»",
   "order {state}": "orden {state}",
   "label \"{label}\"": "etiqueta «{label}»",
@@ -4630,7 +4640,7 @@ const ES = {
   "↻ FIND REPOS": "↻ BUSCAR REPOS",
   "A repo or a folder room elsewhere on a computer: write its path under that computer, or its parent ending in \\* to take every folder inside. The paths are that computer's alone, and only say where to look: each folder is still known by its remote or its mark.": "Un repo o una sala de carpeta en otro sitio de un ordenador: escribe su ruta bajo ese ordenador, o la de su carpeta padre acabada en \\* para tomar todas las carpetas de dentro. Las rutas son solo de ese ordenador, y solo dicen dónde mirar: cada carpeta se sigue reconociendo por su remote o por su marca.",
   "Also looks in (one path per line, of this computer; ending in \\* takes each folder inside):": "Busca también en (una ruta por línea, de este ordenador; acabada en \\* toma cada carpeta de dentro):",
-  "D:\\Clients\\*   (each folder inside)\nC:\\Users\\me\\OneDrive\\accounts   (this folder)": "D:\\Clientes\\*   (cada carpeta de dentro)\nC:\\Users\\yo\\OneDrive\\contabilidad   (esta carpeta)",
+  "D:\\Clients\\*   (each folder inside)\nD:\\Projects\\notes   (this folder)": "D:\\Clientes\\*   (cada carpeta de dentro)\nD:\\Proyectos\\notas   (esta carpeta)",
   "Places where {machine} also looks": "Sitios donde {machine} también busca",
   "not looked at yet": "aún sin mirar",
   "not found": "no encontrada",
@@ -4772,7 +4782,7 @@ async function start() {
     viewSessions(Date.now()).map(s => [s.sessionId, s.folder, s.vstate, s.tool || "", s.detail || "", s.title || "", s.model || "", s.waitKind || "", (s.drones || []).join("|"), s.endReason || ""]),
     orders.map(o => [o.id, o.status, o.folder, o.mode, o.proposedBy?.folder || "", o.approvedAt || 0, o.deliveredTo || "", o.handoff?.number || 0]),
     dispatchers.map(d => [d.machine, Date.now() - (d.heartbeatAt || 0) < LEASE_MS]),
-    Object.entries(handoffs.byFolder || {}).map(([f, list]) => [f, (Array.isArray(list) ? list : []).map(i => [i.number, i.progressLabel || "", (i.assignees || []).length])]),
+    Object.entries(handoffs.byFolder || {}).map(([f, list]) => [f, (Array.isArray(list) ? list : []).map(i => [i.number, i.progressLabel || "", (i.assignees || []).length, isUrgentHandoff(i)])]),
     agentsCatalog.scannedAt || 0, departmentsVersion,
   ]);
   // A robot that stays where it is still learns when its session last did

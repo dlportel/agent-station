@@ -36,7 +36,7 @@ teams give it (`in progress`, `wip`, `working`, `en curso`, `en progreso`, with 
 `status:` prefix), which the dispatcher keeps as `progressLabel`; or its issue is assigned to
 someone (`assignees`, up to three). Otherwise it is TO DO. The chip on each row and the handoff's
 detail say which signs it has, each room's heading and its board count the ones being done, and the
-full list filters by state. `To Do` and `Doing` are left out of the labels a handoff shows.
+full list filters by state. `To Do` and `Doing` are left out of the labels a handoff shows. A label that says a handoff is urgent (`urgent`, `urgente`, `critical`, `crítico`, `blocker` or `p0`, with or without a `priority:` prefix) is drawn in red, its handoffs go first in their room's list on the bridge, and the room's board counts them.
 
 On GitHub, an issue takes only labels its repo has, so the dispatcher creates `To Do` and `Doing`
 in each repo that lacks them, once, and never changes one that exists.
@@ -209,7 +209,7 @@ no branch to start from.
 
 The dispatcher of each computer looks for the station's repos and folder rooms next to the
 coordination repo, and also in the places listed for that computer in `config/places`:
-`{ "byMachine": { "<computer>": ["D:\\Clients\\*", "C:\\Users\\me\\OneDrive\\accounts"] } }`, keyed by
+`{ "byMachine": { "<computer>": ["D:\\Clients\\*", "D:\\Projects\\notes"] } }`, keyed by
 the computer's name as its dispatcher reports it. A path ending in `\*` (or `/*`) takes each folder
 directly inside it, at most 300; any other path is that folder alone. Only full paths count, from a drive or the root, never a network path (a server's share would be handed the user's credentials), at most
 50 per computer. The station's own configuration never holds a path, since each computer has its own

@@ -8,7 +8,7 @@
   const now = Date.now();
   // What the page changed in a session (disconnecting it) stays on top of its made-up fields.
   const sessionPatches = {};
-  const session = (id, folder, state, model, extra) => ({ id, data: () => ({ folder, title: id, state, model, lastEventAt: now - 20000, startedAt: now - 3600000, machine: "LAPTOP", modVersion: "1.2.94", drones: [], ...extra, ...sessionPatches[id] }) });
+  const session = (id, folder, state, model, extra) => ({ id, data: () => ({ folder, title: id, state, model, lastEventAt: now - 20000, startedAt: now - 3600000, machine: "LAPTOP", modVersion: "1.2.96", drones: [], ...extra, ...sessionPatches[id] }) });
   const sessions = [
     session("web-1", "web", "working", "claude-opus-5-5", { title: "Pricing page redesign", tool: "Edit", detail: "pricing.astro" }),
     session("web-2", "web", "waiting", "claude-sonnet-5-5", { title: "Blog images", waitKind: "permission", tool: "Bash", detail: "npm" }),
