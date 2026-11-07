@@ -27,6 +27,9 @@ The version lives in two places that must stay equal: `plugin/.claude-plugin/plu
   (375 px), in English and in Spanish (`?lang=es` in the demo). Serve the repo locally
   (`python -m http.server`) and open `/demo/`. When the page starts reading or writing data in a
   new way, update `demo/data.js` so the demo keeps working.
+- Every place that sends an order (giving one, from the form, a robot's card or a handoff; editing a
+  proposal; resending) offers the same destinations with the same picker: `DESTINATIONS` and
+  `destinationChoices` in `page/office.html`. A new place uses them; none keeps its own list.
 - Prefer the simplest change that works. A fix that adds state, waits or special cases for a
   rare problem is usually not worth it. No new dependencies without asking.
 

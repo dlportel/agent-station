@@ -70,6 +70,12 @@ const ES: Record<string, string> = {
   'Card ready in the coordination session of {machine}: click it to create the session.': 'Tarjeta lista en la sesión de coordinación de {machine}: haz clic en ella para crear la sesión.',
   'The new session could not be prepared: {error}': 'No se pudo preparar la sesión nueva: {error}',
   'Session created with your click.': 'Sesión creada con tu clic.',
+  'Session opened by the coordination session.': 'Sesión abierta por la sesión de coordinación.',
+  'Session opened by the coordination session and switched to {model}.': 'Sesión abierta por la sesión de coordinación y pasada a {model}.',
+  'Not opened yet: {error}': 'Aún sin abrir: {error}',
+  'Waiting for you: on {machine}, use OPEN NEW SESSION and send the text. Or ask its coordination session to open the pending orders.': 'Te está esperando: en {machine}, usa ABRIR SESIÓN NUEVA y envía el texto. O pide a su sesión de coordinación que abra las órdenes pendientes.',
+  'Station order for {room}. Its whole text reaches you with this message: if it does not, say so and stop.': 'Orden de la estación para {room}. Su texto completo te llega con este mensaje: si no te llega, dilo y para.',
+  "Order sent from the station for {room}. It is this session's whole task, given or approved by the user on the station page.": 'Orden enviada desde la estación para {room}. Es toda la tarea de esta sesión, dada o aprobada por el usuario en la página de la estación.',
   'Session created with your click and switched to {model}.': 'Sesión creada con tu clic y pasada a {model}.',
   'Session created, but the model could not be switched: {error}': 'Sesión creada, pero no se pudo cambiar el modelo: {error}',
   // the coordinator command

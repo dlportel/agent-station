@@ -314,9 +314,10 @@ export function orderMark(orderId: string, folder: string, attempt?: unknown): s
   return `[agent-station order ${orderClaim(orderId, attempt)} for ${folder}]`
 }
 // Only at the very end of the message, where the dispatcher writes it, so a
-// mark quoted inside an order's text does not count.
+// mark quoted inside an order's text does not count. The one thing allowed after
+// it is the line about shared notes that the app adds to a session it starts.
 export function readOrderMark(text: unknown): { orderId: string; claim: string; folder: string } | undefined {
-  const match = /\[agent-station order ([A-Za-z0-9_.:-]{1,200})(?:#(\d{1,6}))? for ([A-Za-z0-9_.-]{1,200})\]\s*$/.exec(String(text ?? ''))
+  const match = /\[agent-station order ([A-Za-z0-9_.:-]{1,200})(?:#(\d{1,6}))? for ([A-Za-z0-9_.-]{1,200})\]\s*(?:Shared notes folder for this group of sessions[^\n]*\s*)?$/.exec(String(text ?? ''))
   return match ? { orderId: match[1], claim: orderClaim(match[1], match[2]), folder: match[3] } : undefined
 }
 

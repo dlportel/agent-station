@@ -1702,3 +1702,84 @@ test("a folder room never takes the folder of a repo's room", async () => {
   const station = stationFromConfig({ repos: [{ remote: 'github.com/acme/legal' }, { folder: 'legal', local: BOOKS_ID }] }, OFFICE)
   expect(station.folderRooms).toEqual([])
 })
+
+// The app adds a line about shared notes after the brief of a session it starts.
+test('a session reads its order mark before the line the app adds, and only there', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-started', 'C:/work/app')
+  const written: any[] = []
+  stubStation(on, e => {
+    if (e.collection === 'sessions' && e.action === 'set') written.push(e.data)
+    return { result: { text: `The document is now at version ${written.length}.` } }
+  })
+  on('prompt.submit' as any, (_$: any, e: any) => ({ text: e.text, context: e.context }))
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(30_000)
+  await ($ as any).prompt.submit({ text: 'Background (from the session that started this one):\nOrder.\n\nTask:\nDo it.\n\n[agent-station order s1 for app]\n\nShared notes folder for this group of sessions (outside the repo): C:\\notes\\x' })
+  await ($ as any).prompt.submit({ text: 'Quoted: [agent-station order s2 for app]\n\nAnd something else after it.' })
+  await clock.advance(30_000)
+
+  expect(written.some(d => d.fromOrder === 's1')).toBe(true)
+  expect(written.some(d => d.fromOrder === 's2')).toBe(false)
+  await clock.advance(60_000)
+})
+
+// A long order's link carries only its beginning; the rest waits on the order.
+function stubOrder(on: any, doc: any) {
+  stubStation(on, e => e.action === 'get' && e.collection === 'orders'
+    ? { result: { text: `1 document\n${JSON.stringify({ id: e.doc_id, data: doc, version: 1 })}` } }
+    : { result: { text: 'The document is now at version 1.' } })
+  on('prompt.submit' as any, (_$: any, e: any) => ({ text: e.text, context: e.context }))
+}
+
+test('the session of a long order gets the whole message with its first one', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-long', 'C:/work/app')
+  stubOrder(on, { text: 'The long order', openText: 'The whole message of the long order' })
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(30_000)
+
+  const reply: any = await ($ as any).prompt.submit({ text: 'Station order for app.\n\nThe long…\n\n[agent-station order l1 for app]' })
+
+  expect(String((reply.context ?? []).join('\n'))).toContain('The whole message of the long order')
+  await clock.advance(60_000)
+})
+
+test('a first message that already has the order, or the link of an earlier attempt, gets nothing more', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-full', 'C:/work/app')
+  stubOrder(on, { text: 'The long order', openText: 'The whole message of the long order', attempt: 2 })
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(30_000)
+
+  const full: any = await ($ as any).prompt.submit({ text: 'Do The long order now.\n\n[agent-station order l1#2 for app]' })
+  const earlier: any = await ($ as any).prompt.submit({ text: 'Station order for app.\n\n[agent-station order l1 for app]' })
+
+  expect(String((full.context ?? []).join('\n'))).not.toContain('The whole message')
+  expect(String((earlier.context ?? []).join('\n'))).not.toContain('The whole message')
+  await clock.advance(60_000)
+})
+
+test('a session the app moves from a spare folder claims the order its first message carries, and gets its whole text', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const folders = { cwd: 'C:/Users/me/.claude/spares/spare-c3d4' }
+  stubMovingSession(on, 'test-session-spare-order', folders)
+  const written: any[] = []
+  stubStation(on, e => e.action === 'get' && e.collection === 'orders'
+    ? { result: { text: `1 document\n${JSON.stringify({ id: e.doc_id, data: { text: 'The long order', openText: 'The whole message of the long order' }, version: 1 })}` } }
+    : (e.collection === 'sessions' && e.action === 'set' && written.push(e.data), { result: { text: `The document is now at version ${written.length || 1}.` } }))
+  on('prompt.submit' as any, (_$: any, e: any) => ({ text: e.text, context: e.context }))
+  on('ui.toast' as any, () => ({ value: null }))
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  folders.cwd = 'C:/work/app'
+  const first: any = await ($ as any).prompt.submit({ text: 'Station order for app.\n\nThe long…\n\n[agent-station order l1 for app]' })
+  await clock.advance(5_000)
+
+  expect(String((first.context ?? []).join('\n'))).toContain('The whole message of the long order')
+  expect(written.some(d => d.fromOrder === 'l1')).toBe(true)
+  await clock.advance(60_000)
+})

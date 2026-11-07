@@ -77,6 +77,12 @@ and only in a folder you set for a folder room (see *Folder rooms and places*).
   in the app, not in `claude` in a terminal: the dispatcher delivers orders through the app's own
   session tools. For the same reason, on Linux sessions report and propose orders but nothing can
   deliver them.
+- A version of the app the station supports: checked up to the Claude desktop app 4.23118, with
+  Claude Code 2.1.317. Older apps that leave task cards for new sessions (`spawn_task`) keep that
+  card; from 4.16336 on, the app has no cards, and a new session opens from the order's OPEN NEW
+  SESSION button or from the coordination session. A later app may change the session tools the
+  dispatcher uses: if orders for a new session stop working after an update, check the issues of
+  this repo before reporting it.
 - A claude.ai account that can publish artifacts with a database.
 - The coordination session with permissions bypassed (`bypassPermissions`), if you can: that is the
   mode in which every feature works. See *Permission modes* below.
@@ -153,9 +159,11 @@ repos, so it cannot be the coordination.
 **Orders.** `+ GIVE ORDER`, or a robot's card, opens the order form: the room, the agent (the
 main session or one of the room's subagents), where it goes (a free session, only an open one, a
 new session, or a particular session) and the model. An open session gets the order as a message,
-even while it works (it waits for the end of its turn). A new session cannot be created from a
-plugin, so the dispatcher leaves a card in the coordination session and the order waits for your
-click.
+even while it works (it waits for the end of its turn). The dispatcher cannot start a new session
+by itself, so that order waits for you. OPEN NEW SESSION on its detail fills in the app's
+new-session screen for you to send. To open them all at once, tell the coordination session, in
+the desktop app, to open the pending orders. On an app that still has task cards, the order leaves
+a card in the coordination session instead.
 
 **Proposals.** An agent that needs another room's work proposes an order with `propose_order`. The
 proposal shows on the bridge with why it is asked, who asks and where it would go; you approve it,
@@ -368,7 +376,7 @@ A coordination session that starts in another mode than bypass says so once, in 
 - **The app turns `@` into `＠` in messages between sessions.** An order delivered to an open
   session arrives with every at sign replaced by the full-width one (U+FF20), so that it never
   attaches a file; the order says so when its text has one, so that the agent writes the ordinary
-  one in code, SQL, email addresses and paths. A new session's card keeps it.
+  one in code, SQL, email addresses and paths. A new session's first message keeps it.
 - **One copy of the plugin per computer.** Two installed plugins named `agent-station`, from
   different marketplaces, do not work side by side. To report to several stations, list them all in
   one copy's `stations` option.

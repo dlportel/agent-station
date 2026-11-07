@@ -25,7 +25,7 @@ const REMOTES: Record<string, string> = {
 
 type Doc = { data: Record<string, any>; version: number }
 
-function fakeOfficeDatabase(on: any, failWrite: (e: any) => boolean = () => false) {
+function fakeOfficeDatabase(on: any, failWrite: (e: any) => boolean = () => false, failRead: (e: any) => string | undefined = () => undefined) {
   const store = new Map<string, Doc>()
   const key = (collection: string, id: string) => `${collection}/${id}`
   const line = (collection: string, id: string) => {
@@ -37,6 +37,8 @@ function fakeOfficeDatabase(on: any, failWrite: (e: any) => boolean = () => fals
     const k = key(e.collection, e.doc_id)
     const existing = store.get(k)
     const reply = (text: string) => ({ result: { text } }) as any
+    const readFailure = failRead(e)
+    if (readFailure) return reply(readFailure)
     if (e.action === 'get') {
       return reply(existing ? `1 document\n${line(e.collection, e.doc_id)}` : 'No documents matched')
     }
@@ -1724,5 +1726,232 @@ test('a card nobody has clicked for an hour is looked at every tenth poll, and s
   db.seed('sessions', 'local_card', { folder: 'app', machine: 'TESTPC', state: 'working', fromOrder: 'old1', title: 'Tidy', lastEventAt: Date.now() })
   await clock.advance(10 * 30_000)
   expect(db.read('orders', 'old1')?.status).toBe('delivered')
+  await clock.advance(60_000)
+})
+
+// An app with no spawn_task leaves no card: the order waits with a link to the
+// app's new-session screen, and the coordination session opens it on a turn the
+// user typed there.
+function stubAppWithoutCards(on: any, mcpCalls: any[], startReply: (e: any) => string | Error, spawnError = 'agent-station: $.mcp.call: no connected MCP tool "spawn_task" on a server named "ccd_session"') {
+  mock.env(on, { COMPUTERNAME: 'TESTPC', USERPROFILE: 'C:/Users/me' })
+  on('session.cwd' as any, () => ({ value: 'C:/work/coord' }))
+  on('session.id' as any, () => ({ value: 'engine-id' }))
+  on('ui.status' as any, () => ({ value: null }))
+  on('tool.call', { tool: 'Read' }, () => ({ result: { text: 'ok' } }) as any)
+  on('tool.register' as any, (_$: any, e: any) => ({ value: { tool: `mcp__agent-station__${e.name}` } }))
+  on('mcp.call' as any, (_$: any, e: any) => {
+    mcpCalls.push(e)
+    const text = (t: string, isError = false) => ({ value: { content: [{ type: 'text', text: t }], isError } })
+    if (e.tool === 'spawn_task') return text(spawnError, true)
+    if (e.tool === 'start_session') {
+      const reply = startReply(e)
+      return reply instanceof Error ? text(reply.message, true) : text(reply)
+    }
+    if (e.tool === 'get_session') return text(JSON.stringify({ sessionId: 'local_coord', title: 'Coordination', model: 'claude-opus-5-5' }))
+    if (e.tool === 'list_sessions') return text('[]')
+    return text('')
+  })
+}
+const sessionStarted = (id: string) => `Started session "x" (session_id: ${id}, name: x). It runs on its own.`
+
+test('with no spawn_task a new-session order waits with a link to the app, and never starts a session by itself', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubAppWithoutCards(on, mcpCalls, () => sessionStarted('local_new'))
+  stubGit(on)
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('orders', 'l1', { text: 'Handle issue 2', folder: 'app', mode: 'new', status: 'pending', createdAt: Date.now() })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  const order = db.read('orders', 'l1')
+  expect(order?.status).toBe('needs_click')
+  expect(order?.awaitsOpen).toBe(true)
+  expect(String(order?.note)).toContain('OPEN NEW SESSION')
+  const link = new URL(String(order?.openLink))
+  expect(link.protocol).toBe('claude:')
+  expect(link.searchParams.get('folder')).toBe('C:\\work\\app')
+  expect(String(link.searchParams.get('q')).endsWith('[agent-station order l1 for app]')).toBe(true)
+  await clock.advance(5 * 60_000)
+  expect(mcpCalls.filter(c => c.tool === 'spawn_task').length).toBe(1)
+  expect(mcpCalls.some(c => c.tool === 'start_session')).toBe(false)
+})
+
+test('a long order gets a short link, and keeps its whole message for the session', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubAppWithoutCards(on, [], () => sessionStarted('local_new'))
+  stubGit(on)
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+  const text = 'Long order '.repeat(400)
+  db.seed('orders', 'l2', { text, folder: 'app', mode: 'new', status: 'pending', createdAt: Date.now() })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  const order = db.read('orders', 'l2')
+  expect(order?.status).toBe('needs_click')
+  expect(String(order?.openLink).length).toBeLessThanOrEqual(2000)
+  const q = String(new URL(String(order?.openLink)).searchParams.get('q'))
+  expect(q).toContain('Long order')
+  expect(q.endsWith('[agent-station order l2 for app]')).toBe(true)
+  expect(String(order?.openText)).toContain(text)
+  await clock.advance(60_000)
+})
+
+test('open_pending_orders starts each waiting order in its room, detaches it and delivers it', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  let count = 0
+  stubAppWithoutCards(on, mcpCalls, () => sessionStarted(`local_new${++count}`))
+  stubGit(on)
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+  const waiting = { mode: 'new', status: 'needs_click', awaitsOpen: true, claimedBy: 'TESTPC', spawnedAt: Date.now() }
+  db.seed('orders', 'w1', { ...waiting, text: 'First', folder: 'app', model: 'claude-sonnet-5-5', createdAt: 1 })
+  db.seed('orders', 'w2', { ...waiting, text: 'Second', folder: 'legal', attempt: 2, createdAt: 2 })
+  db.seed('orders', 'w3', { ...waiting, text: 'Card of another machine', folder: 'app', claimedBy: 'OTHERPC', createdAt: 3 })
+  db.seed('orders', 'w4', { ...waiting, text: 'A card of an older app', folder: 'app', awaitsOpen: undefined, createdAt: 4 })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+  const reply: any = await $.tool.call({ tool: 'mcp__agent-station__open_pending_orders' } as any)
+
+  expect(JSON.stringify(reply)).toContain('Opened a session for 2 order(s)')
+  const starts = mcpCalls.filter(c => c.tool === 'start_session')
+  expect(starts.length).toBe(2)
+  expect(starts[0].args).toMatchObject({ initiation: 'user_asked', context: 'fresh', use_worktree: false, cwd: 'C:\\work\\app' })
+  expect(String(starts[0].args.background).length).toBeGreaterThanOrEqual(80)
+  expect(String(starts[0].args.prompt).endsWith('[agent-station order w1 for app]')).toBe(true)
+  expect(String(starts[1].args.prompt).endsWith('[agent-station order w2#2 for legal]')).toBe(true)
+  expect(db.read('orders', 'w1')).toMatchObject({ status: 'delivered', deliveredTo: 'local_new1' })
+  expect(db.read('orders', 'w2')).toMatchObject({ status: 'delivered', deliveredTo: 'local_new2' })
+  expect(db.read('orders', 'w3')?.status).toBe('needs_click')
+  expect(db.read('orders', 'w4')?.status).toBe('needs_click')
+  expect(mcpCalls.filter(c => c.tool === 'detach_session').map(c => c.args.session_id)).toEqual(['local_new1', 'local_new2'])
+  expect(mcpCalls.some(c => c.tool === 'set_session_model' && c.args.session_id === 'local_new1' && c.args.model === 'claude-sonnet-5-5')).toBe(true)
+  await clock.advance(60_000)
+})
+
+test('when the app refuses, the round stops and the orders go on waiting, with the reason on the first', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubAppWithoutCards(on, mcpCalls, () => new Error('The user is working over Remote Control, and this turn cannot start that session.'))
+  stubGit(on)
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+  const waiting = { mode: 'new', status: 'needs_click', awaitsOpen: true, claimedBy: 'TESTPC', spawnedAt: Date.now() }
+  db.seed('orders', 'r1', { ...waiting, text: 'First', folder: 'app', createdAt: 1 })
+  db.seed('orders', 'r2', { ...waiting, text: 'Second', folder: 'legal', createdAt: 2 })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+  const reply: any = await $.tool.call({ tool: 'mcp__agent-station__open_pending_orders' } as any)
+
+  expect(JSON.stringify(reply)).toContain('2 order(s) go on waiting')
+  expect(mcpCalls.filter(c => c.tool === 'start_session').length).toBe(1)
+  expect(db.read('orders', 'r1')?.status).toBe('needs_click')
+  expect(String(db.read('orders', 'r1')?.note)).toContain('Remote Control')
+  expect(db.read('orders', 'r2')?.status).toBe('needs_click')
+  await clock.advance(5 * 60_000)
+  expect(mcpCalls.filter(c => c.tool === 'start_session').length).toBe(1)
+})
+
+test('any other error from spawn_task fails the order with its reason, once', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubAppWithoutCards(on, mcpCalls, () => sessionStarted('local_new'), 'The app could not queue the task.')
+  on('ui.toast' as any, () => ({ value: null }))
+  stubGit(on)
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('orders', 'e1', { text: 'Refused', folder: 'app', mode: 'new', status: 'pending', createdAt: Date.now() })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  expect(db.read('orders', 'e1')?.status).toBe('failed')
+  expect(String(db.read('orders', 'e1')?.note)).toContain('could not queue')
+  await clock.advance(5 * 60_000)
+  expect(mcpCalls.filter(c => c.tool === 'spawn_task').length).toBe(1)
+})
+
+test('a started session the app gives no id for is not opened again, and its mark claims the order', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const mcpCalls: any[] = []
+  stubAppWithoutCards(on, mcpCalls, () => 'Started the session.')
+  stubGit(on)
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('orders', 'n1', { mode: 'new', status: 'needs_click', awaitsOpen: true, claimedBy: 'TESTPC', spawnedAt: Date.now(), text: 'First', folder: 'app', createdAt: 1 })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+  await $.tool.call({ tool: 'mcp__agent-station__open_pending_orders' } as any)
+  await $.tool.call({ tool: 'mcp__agent-station__open_pending_orders' } as any)
+
+  expect(mcpCalls.filter(c => c.tool === 'start_session').length).toBe(1)
+  expect(db.read('orders', 'n1')?.status).toBe('needs_click')
+  db.seed('sessions', 'local_new', { folder: 'app', machine: 'TESTPC', state: 'working', fromOrder: 'n1', title: 'New' })
+  await clock.advance(60_000)
+  expect(db.read('orders', 'n1')).toMatchObject({ status: 'delivered', deliveredTo: 'local_new' })
+})
+
+for (const [name, answer] of [
+  ['that says so', 'db read failed (unavailable): try later'],
+  ['with no error flag', 'that check is no longer on record: nothing was done'],
+] as const) {
+  test(`a failed read ${name} is reported as one, never as no orders`, { options }, async ($, on) => {
+    const clock = mock.clock(on)
+    const mcpCalls: any[] = []
+    stubAppWithoutCards(on, mcpCalls, () => sessionStarted('local_new'))
+    stubGit(on)
+    stubFolders(on)
+    let isFailing = false
+    const db = fakeOfficeDatabase(on, () => false, e => isFailing && e.collection === 'orders' && e.action === 'query' ? answer : undefined)
+    db.seed('orders', 'f1', { mode: 'new', status: 'needs_click', awaitsOpen: true, claimedBy: 'TESTPC', spawnedAt: Date.now(), text: 'First', folder: 'app', createdAt: 1 })
+
+    await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+    await clock.advance(10_000)
+    isFailing = true
+    const reply = JSON.stringify(await $.tool.call({ tool: 'mcp__agent-station__open_pending_orders' } as any))
+    isFailing = false
+
+    expect(reply).toContain('could not be read')
+    expect(reply).toContain(answer)
+    expect(reply).not.toContain('No order is waiting')
+    expect(mcpCalls.some(c => c.tool === 'start_session')).toBe(false)
+    await clock.advance(60_000)
+  })
+}
+
+test('with really no order waiting the tool says so', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubAppWithoutCards(on, [], () => sessionStarted('local_new'))
+  stubGit(on)
+  stubFolders(on)
+  fakeOfficeDatabase(on)
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+
+  expect(JSON.stringify(await $.tool.call({ tool: 'mcp__agent-station__open_pending_orders' } as any))).toContain('No order is waiting')
+  await clock.advance(60_000)
+})
+
+test('a long order with an emoji where its excerpt ends still gets its link', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubAppWithoutCards(on, [], () => sessionStarted('local_new'))
+  stubGit(on)
+  stubFolders(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('orders', 'u1', { text: `${'x'.repeat(159)}\u{1F600}${'Long order '.repeat(300)}`, folder: 'app', mode: 'new', status: 'pending', createdAt: Date.now() })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(5_000)
+
+  expect(db.read('orders', 'u1')?.status).toBe('needs_click')
+  expect(String(db.read('orders', 'u1')?.openLink)).toContain('claude://code/new?q=')
   await clock.advance(60_000)
 })

@@ -379,14 +379,32 @@ Each order names a department or a session, a model (or keeps the session's), an
 an open session, a new session, or either. One coordination session per station and machine holds
 the dispatcher lease and checks the pending orders every 30 seconds. For an open session it picks
 an idle one of that department on that machine, switches its model if the order asks for another,
-and sends it the order as a message. A new session cannot be created from a plugin, so the
-dispatcher leaves a task card in the coordination session and the order shows as waiting for your
-click, first among the pending orders on the bridge, where it can also be discarded. The card's
-message ends with the order's mark, `[agent-station order <id> for <folder>]`. The session the card
-opens finds the mark at the very end of its first message and records that order as its
-`fromOrder`, and the dispatcher delivers the order to that session only (an open session of the
+and sends it the order as a message. The dispatcher cannot start a new session by itself, because
+the app only starts sessions on a turn the user typed, so an order for a new session shows as
+waiting for your click, first among the pending orders on the bridge, where it can also be
+discarded. How it is opened depends on the app:
+
+- **An app with `spawn_task`:** the dispatcher leaves a task card in the coordination session, and
+  clicking it opens the session.
+- **An app without it:** the order waits with `awaitsOpen`, and its detail has OPEN NEW SESSION
+  (`openLink`): on the machine that took the order, it opens the app's new-session screen with the
+  room's folder chosen and the order written, for you to send. A link longer than 2,000 characters
+  does not survive the way to the app, so a long order's link carries only its beginning and its
+  mark. The whole message waits on the order (`openText`), and the session's plugin adds it to that
+  first message when it reads the mark. To open every waiting order at once, ask the coordination
+  session to open the pending orders: its `open_pending_orders` tool starts one session per order of that machine,
+  in its room and in the room's own folder, detaches each one so that it does not wake the
+  coordination session at the end of its turns, and delivers the order to it. This works only on a
+  message typed in the coordination session in the desktop app, not from Remote Control. When the
+  app refuses, the round stops, the order that was refused shows why in its note, and all of them
+  go on waiting.
+
+The message of a card or a link ends with the order's mark,
+`[agent-station order <id> for <folder>]`. The session it opens finds the mark at the very end of
+its first message (the app may add a line about shared notes after it) and records that order as
+its `fromOrder`, and the dispatcher delivers the order to that session only (an open session of the
 same machine), never to another one that happens to start in the room meanwhile. If two sessions
-claim the same order, it fails rather than going to either. If the card is run in a
+claim the same order, it fails rather than going to either. If the card or the link is used in a
 session of another room (for example with "do it here" in the coordination session), that session
 is told the order is not for it and not to carry it out, and the order fails with a note saying so.
 
@@ -412,9 +430,10 @@ the page, as it is or with another destination. It goes back to the queue with i
 raised and the trace of its last delivery cleared (a branch taken from the checkout is read again;
 one the order named stays), and the dispatcher handles it as a new order.
 Before resending a delivered order the page says which session got it, since it may already be
-done. From the second attempt on, the card's mark carries the attempt
+done. From the second attempt on, the mark carries the attempt
 (`[agent-station order <id>#<attempt> for <folder>]`) and the dispatcher only takes the session
-that recorded that attempt, so the card of an earlier attempt, opened later, never takes the order.
+that recorded that attempt, so the card or link of an earlier attempt, opened later, never takes
+the order.
 An order for one particular session goes to the machine of that session; any other order
 is taken by the first dispatcher that sees it, on whichever machine, so with several machines it
 may open a new session on one even when another has an idle session of that department.
@@ -565,8 +584,8 @@ Every order starts from a branch of its room's repo, its **base**:
   `origin/<base>`, the session is told so, and to use `origin/<base>` after `git fetch origin
   <base>`, or to ask you if git does not find it either.
 
-Why the session has to be told: the app opens the session of a new-session card in a worktree of
-the repo (a folder under `.claude/worktrees`) on a branch of its own, made from the remote's
+Why the session has to be told: the app may open the session of a new-session card or link in a
+worktree of the repo (a folder under `.claude/worktrees`) on a branch of its own, made from the remote's
 default branch, not from the branch the checkout is on. That session's branch name is always its
 own (`claude/…`), so what matters is the commit it starts from, not the name.
 
@@ -574,7 +593,7 @@ What each session reads first:
 
 | Session | The message starts with |
 |---|---|
-| New, from a card | The base and its commit. If the session's commit is not the one the local base points at (`git rev-parse --short <base>`), it creates its work branch from the local base, never from `origin/<base>`, which may be behind: `git switch -c <its-branch> <base>`. If it runs in the repo's own folder and is not on the base, it does not switch branches there: it asks you. When the checkout had changes not committed, which a worktree does not see, it says so. |
+| New, from a card, a link or `open_pending_orders` | The base and its commit. If the session's commit is not the one the local base points at (`git rev-parse --short <base>`), it creates its work branch from the local base, never from `origin/<base>`, which may be behind: `git switch -c <its-branch> <base>`. If it runs in the repo's own folder and is not on the base, it does not switch branches there: it asks you. When the checkout had changes not committed, which a worktree does not see, it says so. |
 | Open, in a worktree | The same: the base and its commit, and to start from the local base when its own commit is another. It is never told it is "on another branch", since a worktree's branch is always its own. |
 | Open, in the repo's own folder, on another branch | That it is on another branch than the order's, and to check with you before changing anything. |
 | Open, in the repo's own folder, on the base | Nothing: it is where the order starts. |

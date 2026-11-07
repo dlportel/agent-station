@@ -27,7 +27,8 @@ check it before installing.
   does not deny it. An agent's call to the same tool gets the normal permission flow.
 - **The propose_order tool** (`tool.call`): `propose_order` is a tool the plugin registers itself,
   so it answers that call itself: it writes the proposed order to the station, where it waits for
-  your approval. The coordination session also gets `find_repos`, which looks for the station's
+  your approval. The coordination session also gets `open_pending_orders`, which opens a new
+  session for each order waiting for one when you ask it to, `find_repos`, which looks for the station's
   repos on the machine again, and `mark_folder_room`, which writes a folder room's mark when you
   ask for it.
 - **A prompt** (`prompt.submit`): it adds the station's map as context for the model, and nothing
@@ -54,7 +55,8 @@ subagents, and the orders and proposals you or your agents create. Nothing is se
 - In the **coordination session** only, the desktop app's session tools: `list_sessions` (to see
   which sessions are open), `send_message` (to deliver an order you approved), `set_session_model`
   (when an order asks for another model) and `spawn_task` (to leave a card that opens a new
-  session). With KEEP AWAKE on, it also starts one background `Bash` command, which only writes a
+  session, on apps that have it). When you ask it to open the pending orders, `start_session` and
+  `detach_session` (to start each order's session in its room). With KEEP AWAKE on, it also starts one background `Bash` command, which only writes a
   heartbeat file once a minute, and stops it with `TaskStop` when KEEP AWAKE goes off.
 
 ### Programs it runs

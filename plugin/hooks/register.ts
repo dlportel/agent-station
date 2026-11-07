@@ -1,7 +1,7 @@
 import type { AskOptions, Register } from 'claude-code'
 import { artifactKey, callOffice, isOfficeCall, mcpText, officeCallKey, parseDocs, toolDetail, type EngineIo, type OfficeDoc } from './office'
-import { findRepos, isAbsolutePlace, startDispatcherInBackground, type DispatcherContext } from './dispatcher'
-import { coordinationPeerNote, folderForMark, folderForRemote, folderMarkText, isFolderName, MARK_FILE, parentOf, readFolderMark, readFolderMarkAt, readMainRepoTop, readOriginRemote, isBranchName, joinPath, LANGS, readCurrentBranch, readOriginRemoteAnswer, readStationConfig, roomsLine, stationMap, stationRooms, stationUrls, isDirectSessionMessage, readOrderMark, type Lang, type Station } from './station'
+import { findRepos, isAbsolutePlace, openWaitingOrders, startDispatcherInBackground, type DispatcherContext } from './dispatcher'
+import { coordinationPeerNote, orderClaim, folderForMark, folderForRemote, folderMarkText, isFolderName, MARK_FILE, parentOf, readFolderMark, readFolderMarkAt, readMainRepoTop, readOriginRemote, isBranchName, joinPath, LANGS, readCurrentBranch, readOriginRemoteAnswer, readStationConfig, roomsLine, stationMap, stationRooms, stationUrls, isDirectSessionMessage, readOrderMark, type Lang, type Station } from './station'
 import { tx } from './locale-es'
 
 // Observer only: every hook hands the event on unchanged and never waits on
@@ -98,6 +98,15 @@ const MARK_FOLDER_SPEC = {
     },
     required: ['room'],
   },
+  isDeferred: false,
+}
+// Also only for the coordination session: the app starts sessions only on a
+// turn the user typed there, so the dispatcher cannot do this by itself.
+const OPEN_ORDERS_TOOL_NAME = 'open_pending_orders'
+const OPEN_ORDERS_SPEC = {
+  name: OPEN_ORDERS_TOOL_NAME,
+  description: 'Open a new session, in its room, for each station order waiting to be opened on this computer. Use it only when the user asks in this conversation to open the pending orders; it fails on a turn the user did not type here in the desktop app.',
+  inputSchema: { type: 'object', properties: {} },
   isDeferred: false,
 }
 const ORDER_MODES = new Set(['any', 'existing', 'new'])
@@ -208,6 +217,7 @@ export const register: Register = (on, options) => {
   let proposeToolName = ''
   let findReposToolName = ''
   let markFolderToolName = ''
+  let openOrdersToolName = ''
   // The dispatcher's context in a coordination session, for find_repos.
   let dispatcherContext: DispatcherContext | undefined
   // The map of the station this session belongs to. It goes with the session's
@@ -442,6 +452,8 @@ export const register: Register = (on, options) => {
         findReposToolName = String(found?.tool ?? (pluginName ? `mcp__${pluginName}__${FIND_REPOS_TOOL_NAME}` : ''))
         const mark: any = await calls.registerTool(MARK_FOLDER_SPEC).catch(() => undefined)
         markFolderToolName = String(mark?.tool ?? (pluginName ? `mcp__${pluginName}__${MARK_FOLDER_TOOL_NAME}` : ''))
+        const open: any = await calls.registerTool(OPEN_ORDERS_SPEC).catch(() => undefined)
+        openOrdersToolName = String(open?.tool ?? (pluginName ? `mcp__${pluginName}__${OPEN_ORDERS_TOOL_NAME}` : ''))
       }
       await calls.registerCommand(coordinatorCommand(member.station.language)).catch(() => {})
       areSessionToolsRegistered = true
@@ -521,15 +533,15 @@ export const register: Register = (on, options) => {
     // A message from another session to the coordination session carries the
     // reminder that it does not forward work or results between rooms.
     if (isCoordination && proposeToolName && isPeerMessage(e.origin)) e = { ...e, context: [...(e.context ?? []), coordinationPeerNote(proposeToolName, station?.language, `/${coordinatorCommand(station?.language ?? 'en').name}`)] }
-    if (readOrderMark(e.text)) {
-      await Promise.race([mapSettled, $.clock.sleep(MAP_WAIT_MS)])
-      e = claimOrderMark(e)
-    }
-    if (isMapDelivered) return next(e)
-    if (!stationMapText) {
+    // An order's mark is read once the session knows its station and room: a
+    // session the app starts in a spare folder joins only now, after its move.
+    const hasMark = !!readOrderMark(e.text)
+    if (!stationMapText && (hasMark || !isMapDelivered)) {
       startOnce(engineIoFor($, callToolAsMod), sessionCallsFor($), 'working')
       await Promise.race([mapSettled, $.clock.sleep(MAP_WAIT_MS)])
     }
+    if (hasMark) e = await claimOrderMark(e)
+    if (isMapDelivered) return next(e)
     if (!stationMapText) return next(e)
     isMapDelivered = true
     // The session's report records when the map went out, so the station shows
@@ -539,16 +551,29 @@ export const register: Register = (on, options) => {
     return next({ ...e, context: [...(e.context ?? []), stationMapText] })
   })
 
+  // A long order's link carries only its beginning: the whole message waits on
+  // the order, for the attempt the mark names.
+  async function withWholeOrder(e: any, orderId: string, claim: string) {
+    if (!io) return e
+    const reply = await callOffice(io, officeUrl, { action: 'get', collection: 'orders', doc_id: orderId })
+    const order = reply.isOk ? parseDocs(reply.text)[0] : undefined
+    const whole = order?.data.openText
+    if (!order || typeof whole !== 'string' || !whole || orderClaim(order.id, order.data.attempt) !== claim) return e
+    // The app turns @ into a full-width one in a session's first message.
+    if (String(e.text).replace(/\uFF20/g, '@').includes(String(order.data.text ?? ''))) return e
+    return { ...e, context: [...(e.context ?? []), whole] }
+  }
+
   // A new-session order's card carries its order's mark. The session that gets
   // it records the order as fromOrder, so the dispatcher hands the order to it
   // and to no other. A session of another room records it too (the dispatcher
   // then fails the order) and is told not to do it.
-  function claimOrderMark(e: any) {
+  async function claimOrderMark(e: any) {
     const mark = readOrderMark(e.text)
     if (!mark || !station || !ownFolder) return e
     if (isReporting) updateReport({ fromOrder: mark.claim }, true)
     else report = { ...report, fromOrder: mark.claim }
-    if (ownFolder === mark.folder) return e
+    if (ownFolder === mark.folder) return withWholeOrder(e, mark.orderId, mark.claim)
     const note = tx(station.language, 'This message is the station order {order}, which is for the room {room}, not for this session (room {own}). Do not carry it out: tell the user that it belongs to {room}, and that its card has to be opened as a new session there.', { order: mark.orderId, room: mark.folder, own: ownFolder })
     return { ...e, context: [...(e.context ?? []), note] }
   }
@@ -598,6 +623,7 @@ export const register: Register = (on, options) => {
     if (isProposeTool(e.tool)) return { result: await proposeOrder(e) } as any
     if (findReposToolName && e.tool === findReposToolName) return { result: await findReposForAgent() } as any
     if (markFolderToolName && e.tool === markFolderToolName) return { result: await markFolderRoomForAgent(e) } as any
+    if (openOrdersToolName && e.tool === openOrdersToolName) return { result: await openOrdersForAgent() } as any
     const isQuestion = QUESTION_TOOLS.has(e.tool)
     const droneKey = SUBAGENT_TOOLS.has(e.tool) ? String((e as any).tool_use_id ?? Math.random()) : ''
     if (droneKey) activeDrones.set(droneKey, String((e as any).subagent_type || 'general-purpose'))
@@ -1070,6 +1096,19 @@ export const register: Register = (on, options) => {
     const found = rooms.length ? rooms.map(room => `${room.folder} (${room.path})`).join(', ') : 'none'
     const absent = missing.length ? ` Rooms of the station with no clone next to the coordination repo on ${machine}: ${missing.join(', ')}. Orders that need a new session there cannot be delivered on this machine until they are cloned.` : ' Every room of the station has its clone here.'
     return `Looked for the station's repos again on ${machine}. Rooms found: ${found}.${absent} The station shows this list in CONFIGURE, REPOS.`
+  }
+
+  // open_pending_orders, for the coordination session's agent: says what was
+  // opened, and what stopped the round if the app refused.
+  async function openOrdersForAgent(): Promise<string> {
+    if (!dispatcherContext) return 'The dispatcher has not started in this session yet: it starts once the session has joined its station. Try again in a moment.'
+    const { opened, failed, refusal, readError, left } = await openWaitingOrders(dispatcherContext)
+    if (readError) return `Nothing was opened: the station's orders could not be read, so it is unknown whether any is waiting. Tell the user what the station said: ${readError}`
+    if (!opened.length && !failed.length && !refusal) return `No order is waiting to be opened on ${dispatcherContext.machine}.`
+    const parts = [opened.length ? `Opened a session for ${opened.length} order(s), in: ${opened.join(', ')}.` : 'No session was opened.']
+    if (failed.length) parts.push(`Failed, with no clone of the room here: ${failed.join(', ')}.`)
+    if (refusal) parts.push(`The app refused the next one, so ${left} order(s) go on waiting. Tell the user what it said, and that an order only opens from a message typed in this session in the desktop app, not from Remote Control: ${refusal}`)
+    return parts.join(' ')
   }
 
   // mark_folder_room, for the coordination session's agent: writes the mark of

@@ -8,7 +8,7 @@
   const now = Date.now();
   // What the page changed in a session (disconnecting it) stays on top of its made-up fields.
   const sessionPatches = {};
-  const session = (id, folder, state, model, extra) => ({ id, data: () => ({ folder, title: id, state, model, lastEventAt: now - 20000, startedAt: now - 3600000, machine: "LAPTOP", modVersion: "1.2.96", drones: [], ...extra, ...sessionPatches[id] }) });
+  const session = (id, folder, state, model, extra) => ({ id, data: () => ({ folder, title: id, state, model, lastEventAt: now - 20000, startedAt: now - 3600000, machine: "LAPTOP", modVersion: "1.2.100", drones: [], ...extra, ...sessionPatches[id] }) });
   const sessions = [
     session("web-1", "web", "working", "claude-opus-5-5", { title: "Pricing page redesign", tool: "Edit", detail: "pricing.astro" }),
     session("web-2", "web", "waiting", "claude-sonnet-5-5", { title: "Blog images", waitKind: "permission", tool: "Bash", detail: "npm" }),
@@ -41,12 +41,12 @@
   const notifyOrders = () => orderListeners.forEach(cb => cb(snapCol([...orders])));
   const notifySessions = () => sessionListeners.forEach(cb => cb(snapCol([...sessions])));
   // What the coordination session does with an order: hand it to an open
-  // session of its room, or leave a card for a new one.
+  // session of its room, or leave a new one waiting to be opened.
   const deliverLater = o => setTimeout(() => {
     const target = sessions.map(s => ({ id: s.id, ...s.data() })).find(s => s.folder === o.record.folder && s.state !== "ended");
     Object.assign(o.record, o.record.mode !== "new" && target
       ? { status: "delivered", deliveredTo: target.id, deliveredTitle: target.title, deliveredAt: Date.now() }
-      : { status: "needs_click", note: "In a real station, a card to open the new session waits in the coordination session." });
+      : { status: "needs_click", awaitsOpen: true, openLink: "claude://code/new?q=Demo%20order", note: "In a real station, this order waits until you ask the coordination session to open it, or open it with the button." });
     notifyOrders();
   }, 2500);
   window.claude = { use: async name => name !== "db" ? null : ({

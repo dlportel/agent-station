@@ -807,21 +807,118 @@ async function prepareNewSession(context: DispatcherContext, order: OfficeDoc) {
     await updateOrder(context, order, { status: 'failed', note: say(context, '{room} is not a room of this station on {machine}.', { room: folder, machine: context.machine }) })
     return
   }
-  const text = String(order.data.text ?? '')
   const start = await readStart(context, order, local.path)
+  const prompt = newSessionPrompt(context, order, start)
   const reply = await callMcpSafely(context, 'ccd_session', 'spawn_task', {
-    title: `${say(context, 'Station')}: ${text.slice(0, 50)}`,
+    title: newSessionTitle(context, order),
     tldr: say(context, 'Order sent from the station for {room}. Click to open the session with this order as its first message.', { room: folder }),
-    // The mark lets the session the card opens claim this order, and only it.
-    prompt: `${startNote(context, start)}${composeOrderMessage(context, order)}
-
-${orderMark(order.id, folder, order.data.attempt)}`,
+    prompt,
     cwd: local.path,
   })
   const startFields = startFieldsOf(start)
+  if (!reply.isOk && NO_SUCH_TOOL.test(reply.text)) {
+    await updateOrder(context, order, {
+      status: 'needs_click',
+      spawnedAt: Date.now(),
+      awaitsOpen: true,
+      ...newSessionLink(context, order, prompt, local.path),
+      note: say(context, 'Waiting for you: on {machine}, use OPEN NEW SESSION and send the text. Or ask its coordination session to open the pending orders.', { machine: context.machine }),
+      ...startFields,
+    })
+    return
+  }
   await updateOrder(context, order, reply.isOk
     ? { status: 'needs_click', spawnedAt: Date.now(), note: say(context, 'Card ready in the coordination session of {machine}: click it to create the session.', { machine: context.machine }), ...startFields }
     : { status: 'failed', note: say(context, 'The new session could not be prepared: {error}', { error: reply.text.slice(0, 300) }) })
+}
+
+const newSessionTitle = (context: DispatcherContext, order: OfficeDoc) => `${say(context, 'Station')}: ${String(order.data.text ?? '').slice(0, 50)}`
+
+// The mark lets the session this message opens claim this order, and only it.
+function newSessionPrompt(context: DispatcherContext, order: OfficeDoc, start: Start): string {
+  return `${startNote(context, start)}${composeOrderMessage(context, order)}
+
+${orderMark(order.id, String(order.data.folder ?? ''), order.data.attempt)}`
+}
+
+// Apps without spawn_task have no card to leave. The app's link for a new
+// session opens that screen with the folder chosen and the text written, for
+// the user to send. Longer links get lost on the way: Windows browsers do not
+// open them, and the app drops the folder. So a long order's link carries only
+// its beginning and its mark, and keeps the whole message in openText, which
+// the session's plugin adds to that first message when it reads the mark.
+const NO_SUCH_TOOL = /no connected MCP tool/i
+const NEW_SESSION_LINK_MAX = 2000
+const LINK_EXCERPT_MAX = 160
+function newSessionLink(context: DispatcherContext, order: OfficeDoc, prompt: string, path: string): { openLink: string; openText: string | null } {
+  const linkFor = (text: string) => `claude://code/new?q=${encodeURIComponent(text)}&folder=${encodeURIComponent(path)}`
+  const fits = (text: string) => linkFor(text).length <= NEW_SESSION_LINK_MAX
+  if (fits(prompt)) return { openLink: linkFor(prompt), openText: null }
+  const brief = (excerpt: string) => `${say(context, 'Station order for {room}. Its whole text reaches you with this message: if it does not, say so and stop.', { room: String(order.data.folder ?? '') })}${excerpt && `\n\n${excerpt}…`}\n\n${orderMark(order.id, String(order.data.folder ?? ''), order.data.attempt)}`
+  // By characters, not code units: half an emoji would make encodeURIComponent throw.
+  const withExcerpt = brief(Array.from(String(order.data.text ?? '')).slice(0, LINK_EXCERPT_MAX).join(''))
+  return { openLink: linkFor(fits(withExcerpt) ? withExcerpt : brief('')), openText: prompt }
+}
+
+// Starts a session for each order of this machine that waits to be opened. The
+// app starts sessions only on a turn the user typed in this session, in the
+// desktop app, so only the coordination session's tool calls this, never the
+// dispatcher's loop. Each session is detached at once: a side session wakes the
+// session that started it at the end of every turn. The first refusal stops the
+// round, since the rest would get the same one; those orders go on waiting.
+export async function openWaitingOrders(context: DispatcherContext): Promise<{ opened: string[]; failed: string[]; refusal?: string; readError?: string; left: number }> {
+  const { orders, error: readError } = await readOrders(context, ['needs_click'])
+  if (readError) return { opened: [], failed: [], readError, left: 0 }
+  const waiting = orders.filter(order => order.data.awaitsOpen === true && order.data.claimedBy === context.machine)
+  const opened: string[] = [], failed: string[] = []
+  for (const [index, order] of waiting.entries()) {
+    if (!context.isAlive()) return { opened, failed, left: waiting.length - index }
+    const folder = String(order.data.folder ?? '')
+    const local = await localRepoFor(context, folder)
+    if (!local) {
+      await updateOrder(context, order, { status: 'failed', note: say(context, '{room} is not a room of this station on {machine}.', { room: folder, machine: context.machine }) })
+      failed.push(folder)
+      continue
+    }
+    const title = newSessionTitle(context, order)
+    const reply = await callMcpSafely(context, 'ccd_session', 'start_session', {
+      initiation: 'user_asked',
+      title,
+      context: 'fresh',
+      cwd: local.path,
+      use_worktree: false,
+      prompt: newSessionPrompt(context, order, await readStart(context, order, local.path)),
+      background: say(context, "Order sent from the station for {room}. It is this session's whole task, given or approved by the user on the station page.", { room: folder }),
+    })
+    if (!reply.isOk) {
+      const refusal = reply.text.slice(0, 300)
+      await updateOrder(context, order, { note: say(context, 'Not opened yet: {error}', { error: refusal }) })
+      return { opened, failed, refusal, left: waiting.length - index }
+    }
+    opened.push(folder)
+    // With no id to go by, the session's mark claims the order; until then it
+    // must not be opened again.
+    const sessionId = /session_id:\s*(local_[\w-]+)/.exec(reply.text)?.[1]
+    if (!sessionId) {
+      await updateOrder(context, order, { awaitsOpen: false, openLink: null })
+      continue
+    }
+    await callMcpSafely(context, 'ccd_session_mgmt', 'detach_session', { session_id: sessionId })
+    const model = order.data.model ? String(order.data.model) : ''
+    const switched = model ? await switchSessionModel(context, sessionId, model) : undefined
+    await updateOrder(context, order, {
+      status: 'delivered',
+      deliveredTo: sessionId,
+      deliveredTitle: title,
+      deliveredAt: Date.now(),
+      note: !switched
+        ? say(context, 'Session opened by the coordination session.')
+        : switched.isOk
+          ? say(context, 'Session opened by the coordination session and switched to {model}.', { model })
+          : say(context, 'Session created, but the model could not be switched: {error}', { error: switched.text.slice(0, 200) }),
+    })
+  }
+  return { opened, failed, left: 0 }
 }
 
 // The branch an order's work starts from: the one the order names, or else the
@@ -886,8 +983,8 @@ async function branchCheckNote(context: DispatcherContext, order: OfficeDoc, ses
   return { start, note: `${say(context, 'This session is on the branch `{branch}`, and this order was meant to start from `{base}`. Check with the user before you change anything.', { branch, base: start.base })}\n\n${remoteOnlyNote(context, start)}` }
 }
 
-// A new-session order goes to the session its card opened: the one that found
-// the order's mark in its first message and recorded it as fromOrder. Never to
+// A new-session order goes to the session its card or link opened: the one that
+// found the order's mark in its first message and recorded it as fromOrder. Never to
 // a session that merely started in the room meanwhile, nor to the card of an
 // earlier attempt of a resent order. A card run in a session of another room
 // (such as "do it here" in the coordination session) fails the order, since
@@ -970,15 +1067,24 @@ async function removeOldOrders(context: DispatcherContext) {
   }
 }
 
+const NO_ORDERS = /no documents matched|\b0 documents/i
 async function queryOrders(context: DispatcherContext, statuses: string[], limit = 50): Promise<OfficeDoc[]> {
+  return (await readOrders(context, statuses, limit)).orders
+}
+
+// The orders in those states, or why they could not be read: an answer with no
+// documents that does not say there are none is a failed read, whatever flag
+// it came with.
+async function readOrders(context: DispatcherContext, statuses: string[], limit = 50): Promise<{ orders: OfficeDoc[]; error?: string }> {
   const reply = await callOffice(context.io, context.officeUrl, {
     action: 'query',
     collection: 'orders',
     // Oldest first, so with more than `limit` of them the ones to clean up come back first.
     query: { where: [['status', 'in', statuses]], order_by: { field: 'createdAt', direction: 'asc' }, limit },
   })
-  if (!reply.isOk) return []
-  return parseDocs(reply.text).sort((a, b) => Number(a.data.createdAt ?? 0) - Number(b.data.createdAt ?? 0))
+  const orders = reply.isOk ? parseDocs(reply.text) : []
+  if (!reply.isOk || (!orders.length && !NO_ORDERS.test(reply.text))) return { orders: [], error: reply.text.slice(0, 300) || 'no answer' }
+  return { orders: orders.sort((a, b) => Number(a.data.createdAt ?? 0) - Number(b.data.createdAt ?? 0)) }
 }
 
 async function updateOrder(context: DispatcherContext, order: OfficeDoc, patch: Record<string, unknown>): Promise<number | undefined> {

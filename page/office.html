@@ -1143,7 +1143,7 @@ function knownModels() {
 const demo = { sessions: [], orders: [], phase: null, sleepy: false, n: 0 };
 // This page's version, the engine's: the sync refuses a page whose version is
 // not the engine's, so the header always says which one is published.
-const PAGE_VERSION = "1.2.96";
+const PAGE_VERSION = "1.2.100";
 // How this viewer wants the page drawn (CONFIGURE, VIEW), kept in their
 // browser, since each screen wants its own: the bridge's and the station's
 // sizes ("auto" or a fixed zoom, texts included), the dialogs' size, the
@@ -2896,15 +2896,8 @@ function renderForm(now) {
   card.append(el("div", { style: { display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: "10px" } },
     el("label", { class: "field", for: "f-proj" }, el("span", {}, tr("MODULE")), proj),
     el("label", { class: "field", for: "f-role" }, el("span", {}, tr("ROLE")), roleSelect)));
-  const dests = [["any", "A free one or, if there is none, a new one"], ["free", "Only an open free one"], ["new", "A new session"], ["chosen", "A particular session"]];
-  const destBox = el("div", { class: "field" }, el("span", {}, tr("DESTINATION")),
-    dests.map(([id, label]) => el("button", { class: "dest", type: "button", "aria-pressed": String(form.dest === id), onclick: () => set("dest", id) }, el("span", { class: "radio" }), tr(label))));
-  if (form.dest === "chosen") {
-    const sel = el("select", { "aria-label": tr("Particular session"), onchange: e => set("target", e.target.value) },
-      [el("option", { value: "", text: targets.length ? tr("Choose a session…") : tr("No open sessions in this module") })].concat(targets.map(t => { const o = el("option", { value: t.sessionId, text: `${t.title || t.sessionId} · ${modelLabel(t.model)}` }); if (t.sessionId === form.target) o.selected = true; return o; })));
-    destBox.append(sel);
-  }
-  card.append(destBox);
+  card.append(el("div", { class: "field" }, el("span", {}, tr("DESTINATION")),
+    destinationChoices(form.proj, form.dest, form.target, (key, target) => { form.dest = key; form.target = target; form.msg = ""; form.err = ""; renderModal(); })));
   const { main, others } = knownModels();
   const modelBox = el("div", { class: "field" }, el("span", {}, tr("MODEL")),
     el("div", { class: "seg" },
@@ -2933,15 +2926,14 @@ async function sendOrder() {
   if (!form.proj) { form.err = tr("The station has no room to give orders to: add repos in CONFIGURE."); form.text = text; return renderModal(); }
   if (!text) { form.err = tr("Write what the agent has to do."); form.text = ""; return renderModal(); }
   if (text.length > ORDER_TEXT_MAX) { form.err = tr("The order has {n} characters and {max} fit. Shorten it or split it into several.", { n: text.length, max: ORDER_TEXT_MAX }); form.text = text; return renderModal(); }
-  if (form.dest === "chosen" && !form.target) { form.err = tr("Choose the session that must receive the order."); form.text = text; return renderModal(); }
+  const destPatch = destinationPatch(form.dest, form.target);
+  if (!destPatch) { form.err = tr("Choose the session that must receive the order."); form.text = text; return renderModal(); }
   if (form.modelMode === "other" && !form.model) { form.err = tr("Choose a model or keep the session's own."); form.text = text; return renderModal(); }
-  const tgt = sessions.find(s => s.sessionId === form.target);
-  const mode = { any: "any", free: "existing", new: "new", chosen: "existing" }[form.dest];
+  const { replyTo, replyGone, ...where } = destPatch;
   const order = {
     text, folder: form.proj, agent: form.role === "main" ? null : form.role,
-    sessionId: form.dest === "chosen" ? form.target : null, mode,
+    ...where,
     model: form.modelMode === "other" ? form.model : null,
-    machine: form.dest === "chosen" && tgt ? tgt.machine : null,
     ...(form.handoff ? { handoff: { number: form.handoff.number, url: form.handoff.url } } : {}),
     status: "pending", createdAt: Date.now(),
   };
@@ -2992,6 +2984,8 @@ function openOrderDetail(id) {
   // session it is meant for. And the session that proposed it.
   const holder = o.status === "needs_click" ? dispatchers.find(d => d.machine === o.claimedBy)?.sessionId : o.deliveredTo || o.sessionId;
   const openAt = sessionLink(holder), openAsker = o.proposedBy?.sessionId !== holder ? sessionLink(o.proposedBy?.sessionId) : null;
+  // A link to the app's new-session screen, with the room and the order filled in.
+  const openNew = o.status === "needs_click" && typeof o.openLink === "string" && o.openLink.startsWith("claude://code/new?") ? o.openLink : null;
   const editor = isEditing ? el("textarea", { id: "order-edit", class: "order-edit", "aria-label": tr("Order text"), spellcheck: "true" }) : null;
   if (editor) editor.value = o.text || "";
   // The branch the work starts from; left empty, the branch the room's repo is
@@ -3011,14 +3005,15 @@ function openOrderDetail(id) {
   const destField = isEditing ? el("div", { class: "field", id: "order-dest" }) : null;
   const drawDest = () => {
     if (!destField) return;
-    const targets = sessions.filter(x => x.folder === o.folder && x.state !== "ended");
-    const options = [["same", `${tr("As it was proposed")}: ${destinationOf(o)}`], ...Object.entries(EDIT_DESTS).map(([key, d]) => [key, tr(d.label)]), ["chosen", tr("A particular session")]];
-    const picked = options.find(([key]) => key === editDest.key) ?? options[0];
+    const keep = ["same", `${tr("As it was proposed")}: ${destinationOf(o)}`];
+    const pick = (key, target) => { editDest.key = key; editDest.target = target; editDest.isOpen = false; drawDest(); };
     const parts = [el("span", {}, tr("DESTINATION"))];
-    if (editDest.isOpen) parts.push(...options.map(([key, label]) => el("button", { class: "dest", type: "button", "aria-pressed": String(editDest.key === key), onclick: () => { editDest.key = key; editDest.isOpen = false; drawDest(); } }, el("span", { class: "radio" }), label)));
-    else parts.push(el("button", { class: "dest dest-folded", type: "button", "aria-expanded": "false", title: tr("Change where the order goes"), onclick: () => { editDest.isOpen = true; drawDest(); } }, el("span", { text: picked[1] }), el("span", { class: "dest-more", text: tr("CHANGE ▾") })));
-    if (editDest.key === "chosen") parts.push(el("select", { "aria-label": tr("Particular session"), onchange: e => { editDest.target = e.target.value; } },
-      [el("option", { value: "", text: targets.length ? tr("Choose a session…") : tr("No open sessions in this module") })].concat(targets.map(t => { const op = el("option", { value: t.sessionId, text: `${t.title || t.sessionId} · ${modelLabel(t.model)}` }); if (t.sessionId === editDest.target) op.selected = true; return op; }))));
+    if (editDest.isOpen) parts.push(...destinationChoices(o.folder, editDest.key, editDest.target, pick, keep));
+    else {
+      const label = editDest.key === "same" ? keep[1] : tr(DESTINATIONS[editDest.key].label);
+      parts.push(el("button", { class: "dest dest-folded", type: "button", "aria-expanded": "false", title: tr("Change where the order goes"), onclick: () => { editDest.isOpen = true; drawDest(); } }, el("span", { text: label }), el("span", { class: "dest-more", text: tr("CHANGE ▾") })));
+      if (editDest.key === "chosen") parts.push(sessionPicker(o.folder, editDest.target, target => pick("chosen", target)));
+    }
     destField.replaceChildren(...parts);
   };
   drawDest();
@@ -3036,16 +3031,44 @@ function openOrderDetail(id) {
         openAt ? linkBtn(openAt, tr("OPEN SESSION")) : null,
         openAsker ? linkBtn(openAsker, tr("OPEN THE ONE ASKING")) : null) : null) : null,
     el("dl", { class: "facts" + (isEditing ? " compact" : "") }, rows.flatMap(([k, v]) => [el("dt", { text: tr(k) }), typeof v === "string" ? el("dd", { text: v }) : el("dd", {}, v)])),
-    !isEditing && (canDiscard || canResend || openAt || openAsker) ? el("div", { style: { display: "flex", flexWrap: "wrap", gap: "10px" } },
+    !isEditing && (canDiscard || canResend || openAt || openAsker || openNew) ? el("div", { style: { display: "flex", flexWrap: "wrap", gap: "10px" } },
       canResend ? el("button", { class: "btn btn-dark", type: "button", onclick: () => openResend(o.id) }, tr("RESEND")) : null,
       canDiscard ? el("button", { class: "btn btn-ghost", type: "button", onclick: () => { discardOrder(o.id); closeModal(); } }, tr("DISCARD")) : null,
       // The sessions open at the other end of the row, away from the decisions.
-      openAt || openAsker ? el("span", { style: { display: "flex", flexWrap: "wrap", gap: "10px", marginLeft: "auto" } },
-        openAt ? linkBtn(openAt, o.status === "needs_click" ? tr("OPEN SESSION (CARD)") : tr("OPEN SESSION")) : null,
+      openAt || openAsker || openNew ? el("span", { style: { display: "flex", flexWrap: "wrap", gap: "10px", marginLeft: "auto" } },
+        openNew ? linkBtn(openNew, tr("OPEN NEW SESSION")) : null,
+        openAt ? linkBtn(openAt, o.status !== "needs_click" ? tr("OPEN SESSION") : o.awaitsOpen ? tr("OPEN COORDINATION") : tr("OPEN SESSION (CARD)")) : null,
         openAsker ? linkBtn(openAsker, tr("OPEN THE ONE ASKING")) : null) : null) : null);
   openInfo(card);
   // The order is read from its start, the cursor ready there.
   if (editor) { editor.focus({ preventScroll: true }); editor.setSelectionRange(0, 0); editor.scrollTop = 0; }
+}
+// Where an order can go. Giving an order, from the form, a robot's card or a
+// handoff, editing a proposal and resending one all offer exactly these, with
+// the same picker; editing and resending add only keeping the order's own.
+const DESTINATIONS = {
+  any: { mode: "any", label: "A free one or, if there is none, a new one" },
+  free: { mode: "existing", label: "Only an open free one" },
+  new: { mode: "new", label: "A new session" },
+  chosen: { mode: "existing", label: "A particular session" },
+};
+// The fields an order takes for a destination, or null for a particular
+// session that is not open any more.
+function destinationPatch(key, target) {
+  if (key !== "chosen") return { mode: DESTINATIONS[key]?.mode || "any", sessionId: null, machine: null, replyTo: null, replyGone: null };
+  const chosen = sessions.find(x => x.sessionId === target && x.state !== "ended");
+  return chosen ? { mode: "existing", sessionId: chosen.sessionId, machine: chosen.machine || null, replyTo: null, replyGone: null } : null;
+}
+function sessionPicker(folder, target, pick) {
+  const targets = sessions.filter(x => x.folder === folder && x.state !== "ended");
+  return el("select", { "aria-label": tr("Particular session"), onchange: e => pick(e.target.value) },
+    [el("option", { value: "", text: targets.length ? tr("Choose a session…") : tr("No open sessions in this module") })].concat(targets.map(t => { const op = el("option", { value: t.sessionId, text: `${t.title || t.sessionId} · ${modelLabel(t.model)}` }); if (t.sessionId === target) op.selected = true; return op; })));
+}
+// keep: [key, label] of an extra first option, the order's own destination.
+function destinationChoices(folder, key, target, pick, keep = null) {
+  const options = (keep ? [keep] : []).concat(Object.entries(DESTINATIONS).map(([id, d]) => [id, tr(d.label)]));
+  const buttons = options.map(([id, label]) => el("button", { class: "dest", type: "button", "aria-pressed": String(key === id), onclick: () => pick(id, id === "chosen" ? target : "") }, el("span", { class: "radio" }), label));
+  return key === "chosen" ? buttons.concat(sessionPicker(folder, target, picked => pick("chosen", picked))) : buttons;
 }
 function destinationOf(o) {
   if (o.replyTo) return tr("The session that asked for it (\"{title}\")", { title: o.replyTo.title || o.replyTo.sessionId }) + (o.mode === "existing" ? "" : tr("; if it is gone, a free one or a new one"));
@@ -3060,37 +3083,36 @@ function destinationOf(o) {
 // earlier attempt never takes it. A delivered order may have been done, so the
 // dialog says where it went before it is sent again.
 const RESENDABLE = ["needs_click", "failed", "delivered"];
-const RESEND_DESTS = { any: { mode: "any", label: "A free one or, if there is none, a new one" }, free: { mode: "existing", label: "Only an open free one" }, new: { mode: "new", label: "A new session" } };
 // "The same" is offered only for an order tied to a session; any other one
 // starts on the option that matches its mode.
-function openResend(id, dest) {
+function openResend(id, dest, target = "") {
   const o = orders.find(x => x.id === id); if (!o) return;
   const isTied = !!(o.sessionId || o.replyTo);
-  dest ??= isTied ? "same" : Object.keys(RESEND_DESTS).find(key => RESEND_DESTS[key].mode === o.mode) || "any";
-  const options = (isTied ? [["same", `${tr("The same")}: ${destinationOf(o)}`]] : []).concat(Object.entries(RESEND_DESTS).map(([key, d]) => [key, tr(d.label)]));
+  dest ??= isTied ? "same" : Object.keys(DESTINATIONS).find(key => key !== "chosen" && DESTINATIONS[key].mode === o.mode) || "any";
   openInfo(el("div", { class: "card wide", role: "dialog", "aria-label": tr("Resend order") },
     el("div", { class: "card-head" }, el("span", { class: "box-title" }, tr("RESEND ORDER")), el("button", { class: "btn btn-ghost", type: "button", onclick: () => openOrderDetail(id) }, tr("CANCEL"))),
     el("div", { class: "detail-text", text: o.text || "" }),
     o.status === "delivered" ? el("div", { class: "err", text: tr("It was delivered to \"{title}\" on {when}. It may already be done: if you resend it, it will be done twice.", { title: o.deliveredTitle || o.deliveredTo || "?", when: when(o.deliveredAt) || "?" }) }) : null,
     el("div", { class: "field" }, el("span", {}, tr("DESTINATION")),
-      options.map(([key, label]) => el("button", { class: "dest", type: "button", "aria-pressed": String(dest === key), onclick: () => openResend(id, key) }, el("span", { class: "radio" }), label))),
+      destinationChoices(o.folder, dest, target, (key, picked) => openResend(id, key, picked), isTied ? ["same", `${tr("The same")}: ${destinationOf(o)}`] : null)),
     el("div", { style: { display: "flex", flexWrap: "wrap", gap: "10px" } },
-      el("button", { class: "btn btn-cyan", type: "button", onclick: () => resendOrder(id, dest) }, tr(o.status === "delivered" ? "RESEND ANYWAY" : "RESEND")))));
+      el("button", { class: "btn btn-cyan", type: "button", onclick: () => resendOrder(id, dest, target) }, tr(o.status === "delivered" ? "RESEND ANYWAY" : "RESEND")))));
 }
-async function resendOrder(id, dest) {
+async function resendOrder(id, dest, target) {
   const o = orders.find(x => x.id === id);
   if (!db || !o) return;
   if (!RESENDABLE.includes(o.status)) { toast(tr("This order can no longer be resent.")); return openOrderDetail(id); }
+  const destPatch = dest === "same" ? {} : destinationPatch(dest, target);
+  if (!destPatch) { toast(tr("Choose the session that must receive the order.")); return; }
   const now = Date.now();
-  const target = RESEND_DESTS[dest];
   try {
     await db.doc(`orders/${id}`).update({
       status: "pending", attempt: (Number(o.attempt) || 1) + 1, resentAt: now, updatedAt: now,
-      deliveredTo: null, deliveredTitle: null, deliveredAt: null, spawnedAt: null, claimedBy: null, claimedAt: null, note: null,
+      deliveredTo: null, deliveredTitle: null, deliveredAt: null, spawnedAt: null, awaitsOpen: null, openLink: null, openText: null, claimedBy: null, claimedAt: null, note: null,
       // A branch taken from the repo is read again; one the order named stays.
       ...(o.baseIsDefault ? { base: null, baseCommit: null, baseIsDefault: null } : {}),
       // Another destination drops the session the order was meant for.
-      ...(target ? { mode: target.mode, sessionId: null, machine: null, replyTo: null, replyGone: null } : {}),
+      ...destPatch,
     });
     closeModal();
     toast(tr("Order back in the queue. The dispatcher picks it up in less than a minute."));
@@ -3102,9 +3124,6 @@ async function resendOrder(id, dest) {
 // never cut, a longer one is refused whole.
 const ORDER_TEXT_MAX = 20000;
 // Saves the user's edit of a proposal, and approves it in the same write when asked.
-// The destinations a proposal can be given when it is edited, besides keeping
-// its own and choosing a particular session.
-const EDIT_DESTS = { any: { mode: "any", label: "A free one or, if there is none, a new one" }, free: { mode: "existing", label: "Only an open free one" }, new: { mode: "new", label: "A new session" } };
 async function saveOrderText(id, text, approve, base, dest = { key: "same" }) {
   const o = orders.find(x => x.id === id);
   if (!db || !o) return;
@@ -3115,10 +3134,8 @@ async function saveOrderText(id, text, approve, base, dest = { key: "same" }) {
   const branch = String(base || "").trim();
   if (branch && !isBranchName(branch)) { toast(tr("\"{branch}\" is not a branch name: write it as git shows it, or leave it empty. Nothing was saved.", { branch: branch.slice(0, 80) })); return; }
   // Another destination drops the session the proposal was meant for.
-  const chosen = dest.key === "chosen" ? sessions.find(x => x.sessionId === dest.target) : null;
-  if (dest.key === "chosen" && !chosen) { toast(tr("Choose the session that must receive the order.")); return; }
-  const destPatch = dest.key === "chosen" ? { mode: "existing", sessionId: chosen.sessionId, machine: chosen.machine || null, replyTo: null, replyGone: null }
-    : EDIT_DESTS[dest.key] ? { mode: EDIT_DESTS[dest.key].mode, sessionId: null, machine: null, replyTo: null, replyGone: null } : {};
+  const destPatch = dest.key === "same" ? {} : destinationPatch(dest.key, dest.target);
+  if (!destPatch) { toast(tr("Choose the session that must receive the order.")); return; }
   const now = Date.now();
   try {
     await db.doc(`orders/${id}`).update({ text: clean, base: branch || null, baseCommit: null, baseIsDefault: null, ...destPatch, editedAt: now, updatedAt: now, ...(approve ? { status: "pending", approvedAt: now } : {}) });
@@ -4404,6 +4421,8 @@ const ES = {
   "GIVE ORDER": "DAR ORDEN",
   "OPEN SESSION": "ABRIR SESIÓN",
   "OPEN SESSION (CARD)": "ABRIR SESIÓN (TARJETA)",
+  "OPEN NEW SESSION": "ABRIR SESIÓN NUEVA",
+  "OPEN COORDINATION": "ABRIR COORDINACIÓN",
   "OPEN THE ONE ASKING": "ABRIR LA QUE LA PIDE",
   "ASSIGN HANDOFF": "ASIGNAR ENCARGO",
   "Main session": "Sesión principal",
