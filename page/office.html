@@ -1143,7 +1143,7 @@ function knownModels() {
 const demo = { sessions: [], orders: [], phase: null, sleepy: false, n: 0 };
 // This page's version, the engine's: the sync refuses a page whose version is
 // not the engine's, so the header always says which one is published.
-const PAGE_VERSION = "1.2.100";
+const PAGE_VERSION = "1.2.101";
 // How this viewer wants the page drawn (CONFIGURE, VIEW), kept in their
 // browser, since each screen wants its own: the bridge's and the station's
 // sizes ("auto" or a fixed zoom, texts included), the dialogs' size, the
@@ -4018,7 +4018,7 @@ const pick = list => list[Math.floor(Math.random() * list.length)];
 function redrawStation() { lastStationRender = 0; if (view !== "station") setView("station"); else render(); }
 function demoSession(state, ageMin, extra) {
   const f = pick(demoFolders()); if (!f) return;
-  demo.sessions.push({ sessionId: `demo-${++demo.n}`, folder: f, title: `${tr("Test robot")} ${demo.n}`, state, model: pick(["claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-haiku-5-5"]), lastEventAt: Date.now() - ageMin * 60000, startedAt: Date.now(), machine: "TEST", modVersion: latestModVersion() || "0", drones: !extra && state === "working" && Math.random() < .5 ? ["general-purpose"] : [], ...extra });
+  demo.sessions.push({ sessionId: `demo-${++demo.n}`, folder: f, title: `${tr("Test robot")} ${demo.n}`, state, model: pick(["claude-opus-5-5", "claude-fable-5-2", "claude-sonnet-5-5", "claude-haiku-5-5"]), lastEventAt: Date.now() - ageMin * 60000, startedAt: Date.now(), machine: "TEST", modVersion: latestModVersion() || "0", drones: !extra && state === "working" && Math.random() < .5 ? ["general-purpose"] : [], ...extra });
   redrawStation();
 }
 // Moves the newest test robot in a given state to another one, as its session would.

@@ -77,10 +77,12 @@ and only in a folder you set for a folder room (see *Folder rooms and places*).
   in the app, not in `claude` in a terminal: the dispatcher delivers orders through the app's own
   session tools. For the same reason, on Linux sessions report and propose orders but nothing can
   deliver them.
-- A version of the app the station supports: checked up to the Claude desktop app 4.23118, with
-  Claude Code 2.1.317. Older apps that leave task cards for new sessions (`spawn_task`) keep that
-  card; from 4.16336 on, the app has no cards, and a new session opens from the order's OPEN NEW
-  SESSION button or from the coordination session. A later app may change the session tools the
+- A version of the app the station supports: checked up to the Claude desktop app 5.11492, with
+  Claude Code 2.1.325. The plugin declares Claude Code 2.1.321 as its minimum (`engines` in its
+  `plugin.json`). Whether the app offers task cards for new sessions (`spawn_task`) depends on the
+  account and can change without a new version of the app: where it does, the dispatcher leaves a
+  card in the coordination session; where it does not, a new session opens from the order's OPEN
+  NEW SESSION button or from the coordination session. A later app may change the session tools the
   dispatcher uses: if orders for a new session stop working after an update, check the issues of
   this repo before reporting it.
 - A claude.ai account that can publish artifacts with a database.
@@ -346,7 +348,7 @@ The plugin approves its own calls, its writes to the station and the background 
 AWAKE, so they never ask you. On an account of a Team or Enterprise organization, and on a machine
 with managed settings, Claude Code's built-in security plugin answers permission decisions and the
 plugin's other built-in hooks first, and the plugin's are skipped; the app says so with a notice
-such as "its classic.PreToolUse hook was skipped". What that means for the station depends on the
+such as "its classic.Stop hook was skipped". What that means for the station depends on the
 session's mode:
 
 | Mode | What works |
@@ -355,12 +357,11 @@ session's mode:
 | Auto | Orders, reports, proposals and the dispatcher, but not KEEP AWAKE. The plugin's own calls go to the auto-mode classifier, which refuses calls no request asked for: KEEP AWAKE cannot start its command, and now and then a report to the station is refused and sent again later. The rule `"ArtifactData"` in `permissions.allow` of `~/.claude/settings.json` lets the reports through, but it also lets any agent write to any artifact's database without asking (the plugin still refuses agents' writes to a station). There is no safe rule for KEEP AWAKE's command. |
 | Default | The same, but every call of the plugin asks you, so it is not practical for a station session. |
 
-Where the built-in plugin goes first, the plugin notices that its hooks are skipped and works
-around what it can. Its extra confirmations (an agent writing to another session directly, the
-coordination session writing to the station or republishing its page) come as a question with
-Allow and Deny instead of inside the permission dialog. A robot waiting for your permission is
-marked from the session's own permission rules in the default, accept-edits and plan modes; in auto
-mode it shows as working. An input dialog an MCP server opens shows as working in every mode.
+The plugin's extra confirmations (an agent writing to another session directly, the coordination
+session writing to the station or republishing its page) come as a question with Allow and Deny,
+on every account, not inside the permission dialog. A robot waiting for your permission is marked
+from the session's own permission rules in the default, accept-edits and plan modes; in auto mode
+it shows as working. An input dialog an MCP server opens shows as working in every mode.
 A coordination session that starts in another mode than bypass says so once, in a notice.
 
 ## Known limitations

@@ -329,6 +329,15 @@ export function isDirectSessionMessage(tool: string, input: any): boolean {
   return /ccd_session_mgmt__send_message$/.test(tool)
 }
 
+// The target and text of a direct message, read from the field each tool
+// sends to: `to` for SendMessage, `session_id` for the app's send_message. A
+// field the tool ignores must never make two messages to different sessions
+// look alike.
+export function directMessageKey(tool: string, input: any): string {
+  const target = tool === 'SendMessage' ? input?.to : input?.session_id
+  return `${String(target ?? '')}\n${String(input?.message ?? '')}`
+}
+
 // The department of a repo, from its origin remote: an exact remote names its
 // folder (or the repo's own name), and a remote ending in /* takes every repo
 // under that path, each as a department named after the repo.

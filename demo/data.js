@@ -8,13 +8,13 @@
   const now = Date.now();
   // What the page changed in a session (disconnecting it) stays on top of its made-up fields.
   const sessionPatches = {};
-  const session = (id, folder, state, model, extra) => ({ id, data: () => ({ folder, title: id, state, model, lastEventAt: now - 20000, startedAt: now - 3600000, machine: "LAPTOP", modVersion: "1.2.100", drones: [], ...extra, ...sessionPatches[id] }) });
+  const session = (id, folder, state, model, extra) => ({ id, data: () => ({ folder, title: id, state, model, lastEventAt: now - 20000, startedAt: now - 3600000, machine: "LAPTOP", modVersion: "1.2.101", drones: [], ...extra, ...sessionPatches[id] }) });
   const sessions = [
     session("web-1", "web", "working", "claude-opus-5-5", { title: "Pricing page redesign", tool: "Edit", detail: "pricing.astro" }),
     session("web-2", "web", "waiting", "claude-sonnet-5-5", { title: "Blog images", waitKind: "permission", tool: "Bash", detail: "npm" }),
     session("mob-1", "mobile", "working", "claude-opus-5-5", { title: "Offline sync", tool: "Read", detail: "sync_service.dart", drones: ["code-reviewer"] }),
     session("mob-2", "mobile", "standby", "claude-sonnet-5-5", { title: "Release notes" }),
-    session("api-1", "api", "working", "claude-fable-5-1", { title: "Rate limits", tool: "Bash", detail: "pytest" }),
+    session("api-1", "api", "working", "claude-fable-5-2", { title: "Rate limits", tool: "Bash", detail: "pytest" }),
     session("api-2", "api", "standby", "claude-opus-5-5", { title: "Auth tokens" }),
     session("api-3", "api", "working", "claude-haiku-5-5", { title: "OpenAPI schema", tool: "Grep", detail: "operationId" }),
     session("docs-1", "docs", "working", "claude-sonnet-5-5", { title: "Getting started guide", tool: "WebFetch", detail: "developer.mozilla.org" }),

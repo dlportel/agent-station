@@ -15,16 +15,16 @@ check it before installing.
 
 ### Its hooks, and what they decide
 
-- **Before a tool runs** (`tool.call`, `classic.PreToolUse`): it never lets an agent write to a
+- **Before a tool runs** (`tool.call`): it never lets an agent write to a
   station's database or republish a station page (it denies those calls, and the coordination
   session's own station writes ask you). A message from an agent to another Claude Code session
   (`SendMessage`, `send_message`) asks you first, since work between sessions, also of the same repo, goes
   through orders you approve. A write to an artifact the plugin cannot tell apart from a station asks you too.
   Everything else passes unchanged.
-- **Its own station calls** (`tool.check`, `classic.PreToolUse`): the plugin reports to the
-  stations in its `stations` option with the ArtifactData tool, and approves only those calls of
-  its own, while they are in flight, so that a report never opens a permission dialog and auto mode
-  does not deny it. An agent's call to the same tool gets the normal permission flow.
+- **Its own station calls**: the plugin reports to the stations in its `stations` option with the
+  ArtifactData tool. The engine runs the calls a plugin makes itself with no permission dialog and
+  no auto-mode classifier, so a report never stops to ask. An agent's call to the same tool gets
+  the normal permission flow.
 - **The propose_order tool** (`tool.call`): `propose_order` is a tool the plugin registers itself,
   so it answers that call itself: it writes the proposed order to the station, where it waits for
   your approval. The coordination session also gets `open_pending_orders`, which opens a new

@@ -101,7 +101,6 @@ const ES: Record<string, string> = {
   'Allow it?': '¿Lo permites?',
   'Allow': 'Permitir',
   'Deny': 'Denegar',
-  'Station': 'Estación',
   'The user did not allow it.': 'El usuario no lo ha permitido.',
   'The coordination session wants to delete the station page ({url}).': 'La sesión de coordinación quiere borrar la página de la estación ({url}).',
   'The coordination session wants to write to the station ({target}).': 'La sesión de coordinación quiere escribir en la estación ({target}).',

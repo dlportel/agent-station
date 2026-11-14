@@ -258,9 +258,19 @@ test('another spelling of the station URL does not get an agent past the guard',
   expect(writes.some(w => w.doc_id === 'evil')).toBe(false)
 })
 
+// Stands for the user picking `answer` in every question the plugin asks.
+function answerQuestions(on: any, answer: string, asked: any[] = []) {
+  on('tool.call', { tool: 'AskUserQuestion' }, (_$: any, e: any) => {
+    asked.push(e)
+    return { result: { questions: e.questions, answers: { [e.questions[0].question]: answer } } } as any
+  })
+}
+const allowConfirmations = (on: any) => answerQuestions(on, 'Allow')
+
 test('the coordination session may write orders and the station config, and nothing else',{ options }, async ($, on) => {
   const clock = mock.clock(on)
   stubSession(on, 'test-session-6', 'C:/work/coord')
+  allowConfirmations(on)
   const writes: any[] = []
   stubStation(on, e => {
     writes.push(e)
@@ -315,6 +325,7 @@ test('with several stations, a session reports only to the one that lists its re
 test('the coordination of one station cannot write another station, nor its alias', { options: { stations: `${OFFICE};${OTHER}` } }, async ($, on) => {
   const clock = mock.clock(on)
   stubSession(on, 'test-session-16', 'C:/work/coord')
+  allowConfirmations(on)
   const writes: any[] = []
   stubTwoStations(on, writes)
   await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
@@ -811,6 +822,7 @@ test('an agent may not republish or delete a station page; another page is fine'
 test('the coordination session may republish its own station page', { options }, async ($, on) => {
   const clock = mock.clock(on)
   stubSession(on, 'test-session-coordpage', 'C:/work/coord')
+  allowConfirmations(on)
   stubStation(on)
   const published: any[] = []
   on('tool.call', { tool: 'Artifact' }, (_$: any, e: any) => { published.push(e); return { result: { text: 'Published' } } as any })
@@ -1031,6 +1043,56 @@ test('a message to another Claude Code session is told apart from one to a subag
   expect(isDirectSessionMessage('Read', { file_path: 'x' })).toBe(false)
 })
 
+// The app delivers SendMessage to one of its sessions with a send_message call
+// of its own: the user is asked once for the message, not for each call.
+test('a direct message the user allows is asked once, though the app relays it', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-relay', 'C:/work/app')
+  stubStation(on)
+  const asked: any[] = []
+  answerQuestions(on, 'Allow', asked)
+  const delivered: any[] = []
+  on('tool.call', { tool: 'mcp__ccd_session_mgmt__send_message' }, (_$: any, e: any) => { delivered.push(e); return { result: { text: 'delivered' } } as any })
+  on('tool.call', { tool: 'SendMessage' }, async (_$: any, e: any) => {
+    await $.tool.call({ tool: 'mcp__ccd_session_mgmt__send_message', session_id: e.to, message: e.message } as any)
+    return { result: { success: true } } as any
+  })
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(30_000)
+
+  await $.tool.call({ tool: 'SendMessage', to: 'local_peer', message: 'Review my branch' } as any)
+  expect(asked.length).toBe(1)
+  expect(delivered.length).toBe(1)
+
+  // Another message, once that one is done, is asked again.
+  await $.tool.call({ tool: 'mcp__ccd_session_mgmt__send_message', session_id: 'local_peer', message: 'Review my branch' } as any)
+  expect(asked.length).toBe(2)
+})
+
+test('an allowed direct message lets through one relay to its own session, and no other call', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubSession(on, 'test-session-relay-guard', 'C:/work/app')
+  stubStation(on)
+  const asked: any[] = []
+  answerQuestions(on, 'Allow', asked)
+  on('tool.call', { tool: 'mcp__ccd_session_mgmt__send_message' }, () => ({ result: { text: 'delivered' } }) as any)
+  on('tool.call', { tool: 'SendMessage' }, async (_$: any, e: any) => {
+    await $.tool.call({ tool: 'mcp__ccd_session_mgmt__send_message', session_id: e.to, message: e.message } as any)
+    // While the allowed message is still in flight: the same relay again, and
+    // a call to another session that names the allowed one in a field
+    // send_message ignores.
+    await $.tool.call({ tool: 'mcp__ccd_session_mgmt__send_message', session_id: e.to, message: e.message } as any)
+    await $.tool.call({ tool: 'mcp__ccd_session_mgmt__send_message', session_id: 'local_other', to: e.to, message: e.message } as any)
+    return { result: { success: true } } as any
+  })
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(30_000)
+
+  await $.tool.call({ tool: 'SendMessage', to: 'local_peer', message: 'Review my branch' } as any)
+
+  expect(asked.length).toBe(3)
+})
+
 // The session a new-session order's card opens finds the order's mark in its
 // first message and records it, so the dispatcher can hand it that order. A
 // session of another room records it too, and is told not to carry it out.
@@ -1088,34 +1150,7 @@ function stubClassifierWithNoVerdict(on: any, checked: any[]) {
   })
 }
 
-test('the plugin approves its own station calls itself, so a classifier with no verdict never stops them', { options }, async ($, on) => {
-  const clock = mock.clock(on)
-  stubSession(on, 'test-session-auto', 'C:/work/app')
-  const checked: any[] = []
-  stubClassifierWithNoVerdict(on, checked)
-  // The test asks for the verdict on the plugin's first report while that very
-  // call is in flight, as the engine does before running it.
-  let held: any
-  let verdictInFlight: any
-  stubStation(on, async e => {
-    if (e.collection === 'sessions' && !held) {
-      const { tool, ...input } = e
-      held = input
-      verdictInFlight = await $.tool.check({ tool: 'ArtifactData', input })
-    }
-    return { result: { text: 'The document is now at version 1.' } }
-  })
-
-  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
-  await clock.advance(30_000)
-  const verdictAfter = await $.tool.check({ tool: 'ArtifactData', input: held })
-
-  expect(verdictInFlight?.decision).toBe('allow')
-  expect(verdictAfter.decision).toBe('deny')
-  expect(checked.filter(c => c.tool === 'ArtifactData').length).toBe(1)
-})
-
-test('the agent\'s own station calls still get the verdict beneath, even when they match the plugin\'s', { options }, async ($, on) => {
+test('the agent\'s own station calls get the verdict beneath, even when they match the plugin\'s', { options }, async ($, on) => {
   const clock = mock.clock(on)
   stubSession(on, 'test-session-auto-agent', 'C:/work/app')
   const checked: any[] = []
@@ -1130,7 +1165,9 @@ test('the agent\'s own station calls still get the verdict beneath, even when th
 
   expect(verdict.decision).toBe('deny')
   expect(write.decision).toBe('deny')
-  expect(checked.filter(c => c.tool === 'ArtifactData').length).toBe(2)
+  // The plugin's own reports reach this hook too, under a tool_use_id: the
+  // test kit asks it for every call, where a session asks no classifier.
+  expect(checked.filter(c => c.tool === 'ArtifactData' && !c.tool_use_id).length).toBe(2)
 })
 
 // The map tells each session how to open a handoff in every room's repo, with
@@ -1462,22 +1499,25 @@ test('a session that was in no repo joins when it moves to one', { options }, as
   expect(writes.some(w => w.collection === 'sessions' && w.data?.folder === 'legal')).toBe(true)
 })
 
-test('where the app runs PreToolUse, a confirmation is asked there and never again as a question', { options }, async ($, on) => {
-  const clock = mock.clock(on)
-  stubSession(on, 'test-session-noquestion', 'C:/work/coord')
-  stubStation(on)
-  const asked: any[] = []
-  on('tool.call', { tool: 'AskUserQuestion' }, (_$: any, e: any) => { asked.push(e); return { result: { text: 'Allow' } } as any })
-  const published: any[] = []
-  on('tool.call', { tool: 'Artifact' }, (_$: any, e: any) => { published.push(e); return { result: { text: 'Published' } } as any })
-  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
-  await clock.advance(30_000)
+// A confirmation is a question the plugin asks itself, in every app.
+for (const [answer, runs] of [['Allow', true], ['Deny', false]] as const) {
+  test(`a confirmation is asked once as a question, and the call ${runs ? 'goes on when allowed' : 'stops when denied'}`, { options }, async ($, on) => {
+    const clock = mock.clock(on)
+    stubSession(on, `test-session-confirm-${answer}`, 'C:/work/coord')
+    stubStation(on)
+    const asked: any[] = []
+    answerQuestions(on, answer, asked)
+    const published: any[] = []
+    on('tool.call', { tool: 'Artifact' }, (_$: any, e: any) => { published.push(e); return { result: { text: 'Published' } } as any })
+    await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+    await clock.advance(30_000)
 
-  await $.tool.call({ tool: 'Artifact', url: OFFICE, file_path: 'C:/office.html' } as any)
+    await $.tool.call({ tool: 'Artifact', url: OFFICE, file_path: 'C:/office.html' } as any)
 
-  expect(asked.length).toBe(0)
-  expect(published.length).toBe(1)
-})
+    expect(asked.length).toBe(1)
+    expect(published.length).toBe(runs ? 1 : 0)
+  })
+}
 
 test('a compaction, seen as fewer prompts in the session, sends the map again', { options }, async ($, on) => {
   const clock = mock.clock(on)
@@ -1568,7 +1608,7 @@ test('the map tells a room that its handoffs are its repo\'s open issues, how to
       { remote: 'github.com/acme/coord' },
     ],
     departments: {},
-  })
+  }, OFFICE)
   const app = stationMap(station, 'app', 'mcp__agent-station__propose_order')
   expect(app).toContain("Your room's handoffs are the open issues of its repo, `github.com/acme/app-repo`")
   expect(app).toContain('`gh issue list --repo acme/app-repo`')
@@ -1582,7 +1622,7 @@ test('the map tells a room that its handoffs are its repo\'s open issues, how to
   expect(shop).toContain('`glab issue list -R https://gitlab.com/group/shop`')
   expect(stationMap(station, 'quiet', 'mcp__agent-station__propose_order')).not.toContain("Your room's handoffs")
   expect(stationMap(station, 'coord', 'mcp__agent-station__propose_order')).not.toContain("Your room's handoffs")
-  const es = stationMap(stationFromConfig({ language: 'es', repos: [{ remote: 'github.com/acme/app-repo', folder: 'app' }], departments: {} }), 'app', 'mcp__agent-station__propose_order')
+  const es = stationMap(stationFromConfig({ language: 'es', repos: [{ remote: 'github.com/acme/app-repo', folder: 'app' }], departments: {} }, OFFICE), 'app', 'mcp__agent-station__propose_order')
   expect(es).toContain('Los encargos de tu sala son las issues abiertas de su repo, `github.com/acme/app-repo`')
   expect(es).toContain('márcalo `Doing` (`<n>` es su número)')
 })

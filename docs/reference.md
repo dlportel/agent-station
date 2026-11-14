@@ -332,28 +332,27 @@ URL and its `aliases`:
   between sessions, also of the same room, goes through `propose_order` and its approval.
   Messages to the session's own subagents pass.
 
-The plugin's own station calls (its reports, the dispatcher's work, `propose_order`) never ask
-for permission, in any mode: the plugin approves exactly the `ArtifactData` calls it has in flight
-on its station, and every call of the agent gets the verdict of the session's rules and mode as
-usual. It approves them in the engine's `tool.check` event, with `classic.PreToolUse` as a
-fallback for apps that do not raise it. Approving them in `PreToolUse` alone is not enough: in auto
-mode the call still goes to the classifier, and a classifier that gives no verdict denies it.
+The plugin's own calls (its reports, the dispatcher's work, `propose_order`, KEEP AWAKE's
+command) open no permission dialog: the engine runs the calls a plugin makes itself without that
+plugin's own hooks and without the auto-mode classifier, and refuses one only on a deny rule or an
+ask from another hook or the organization. Every call of the agent gets the verdict of the
+session's rules and mode as usual.
 
+The confirmations above are asked in `tool.call` with `$.ui.ask` (Allow / Deny), in every app and
+mode; a dismissed question denies the call. They are not asked from `classic.PreToolUse`, because
 Claude Code's built-in security plugin (Team and Enterprise accounts, managed settings) passes over
-`tool.check`, every `classic.*` event and `session.compact` for plugins the user installed. The
-plugin learns it from its first agent call that goes through with no `classic.PreToolUse`; until a
-`classic.PreToolUse` arrives it acts as if they were passed over, so no confirmation is lost:
+`tool.check`, every `classic.*` event and `session.compact` for plugins the user installed, and
+each hook it passes over shows a notice. So that the station works the same there:
 
-- the confirmations above are asked in `tool.call` with `$.ui.ask` (Allow / Deny); a dismissed
-  question denies the call;
 - a call that `$.tool.check` answers with `ask` marks the session as waiting for permission, only
   in the `default`, `acceptEdits` and `plan` modes, where that verdict is the one the user sees;
+  `classic.PermissionRequest` marks it too where it runs;
 - a compaction is seen as fewer user prompts in the session (`$.session.turns()`) at the next
   message, which then carries the map again; `session.compact` does the same where it runs;
 - the end of the session is taken from `session.end`, which is never passed over; a `/clear` does
   not end it, it only sends the map again.
 
-The plugin's own approvals and KEEP AWAKE have no replacement: they need bypass permissions there.
+KEEP AWAKE has no replacement: it needs bypass permissions there.
 
 A station whose `aliases` were never recorded is guarded only by its main URL, so recording them
 (step 3 of the README's quick start) matters. The plugin only observes: every event is handed on unchanged, writes

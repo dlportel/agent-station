@@ -1,7 +1,7 @@
 import type { AskOptions, Register } from 'claude-code'
 import { artifactKey, callOffice, isOfficeCall, mcpText, officeCallKey, parseDocs, toolDetail, type EngineIo, type OfficeDoc } from './office'
 import { findRepos, isAbsolutePlace, openWaitingOrders, startDispatcherInBackground, type DispatcherContext } from './dispatcher'
-import { coordinationPeerNote, orderClaim, folderForMark, folderForRemote, folderMarkText, isFolderName, MARK_FILE, parentOf, readFolderMark, readFolderMarkAt, readMainRepoTop, readOriginRemote, isBranchName, joinPath, LANGS, readCurrentBranch, readOriginRemoteAnswer, readStationConfig, roomsLine, stationMap, stationRooms, stationUrls, isDirectSessionMessage, readOrderMark, type Lang, type Station } from './station'
+import { coordinationPeerNote, orderClaim, folderForMark, folderForRemote, folderMarkText, isFolderName, MARK_FILE, parentOf, readFolderMark, readFolderMarkAt, readMainRepoTop, readOriginRemote, isBranchName, joinPath, LANGS, readCurrentBranch, readOriginRemoteAnswer, readStationConfig, roomsLine, stationMap, stationRooms, stationUrls, isDirectSessionMessage, directMessageKey, readOrderMark, type Lang, type Station } from './station'
 import { tx } from './locale-es'
 
 // Observer only: every hook hands the event on unchanged and never waits on
@@ -229,15 +229,8 @@ export const register: Register = (on, options) => {
   let isMapDelivered = false
   // The user prompts the session held at the last message: fewer now means a
   // compaction dropped the earlier ones, and the map with them. session.compact
-  // says so too, but the app may pass over it (see classicHooks).
+  // says so too, but an organization's security plugin may pass over it.
   let lastTurns: number | undefined
-  // Whether the app runs this mod's classic hooks and its tool.check. On Team
-  // and Enterprise accounts the app's own security plugin passes over them for
-  // plugins the user installed: the mod then asks its confirmations itself
-  // and reads permission waits from tool.check queries. Undecided until a call
-  // of the agent's has gone through; undecided counts as passed over, so a
-  // confirmation is never lost.
-  let classicHooks: 'unknown' | 'run' | 'skipped' = 'unknown'
   // Settles once the session knows whether it belongs to a station (and, if it
   // does, has its map), so the first message waits for that and no longer.
   // Each attempt to join waits afresh: a session the app moved from its spare
@@ -599,10 +592,18 @@ export const register: Register = (on, options) => {
     startOnce(engineIoFor($, callToolAsMod), sessionCallsFor($), 'working')
     // Never let an agent's write through before the stations' ids are known.
     if (io && !isOwnCall(e) && (isArtifactDataWrite(e.tool, e) || isArtifactPageChange(e.tool, e))) await loadStations(io)
-    // Where the app passes over PreToolUse, its confirmation is asked here.
-    if (classicHooks !== 'run' && !isOwnCall(e)) {
+    // Confirmations are asked here as a question, in every app: a PreToolUse hook
+    // would be passed over where an organization's security plugin goes first.
+    // SendMessage to a session of the app is delivered through a send_message
+    // call of its own, with the same target and text: while the message the user
+    // allowed is in flight, one such call is not asked again.
+    const messageKey = isDirectSessionMessage(e.tool, e) ? directMessageKey(e.tool, e) : ''
+    let releaseMessage = () => {}
+    const isRelay = !!messageKey && e.tool !== 'SendMessage' && takeApprovedMessage(messageKey)
+    if (!isOwnCall(e) && !isRelay) {
       const ask = confirmationFor(e.tool, e)
       if (ask && !(await isConfirmedByUser((question, options) => $.ui.ask(question, options), ask))) return { deny: tx(station?.language, 'The user did not allow it.') }
+      if (ask && messageKey) releaseMessage = holdApprovedMessage(messageKey)
     }
     // The station page itself: only its own coordination session may republish
     // or delete it, and the user is asked (confirmationFor).
@@ -637,13 +638,30 @@ export const register: Register = (on, options) => {
     }, isQuestion || isPermissionWait || !!droneKey)
     try {
       const result = await next(e)
-      if (classicHooks === 'unknown') setClassicHooks('skipped')
       if (report.state === 'waiting') updateReport({ state: 'working' satisfies SessionState, waitKind: null }, true)
       return result
     } finally {
+      releaseMessage()
       if (droneKey && activeDrones.delete(droneKey)) updateReport({ drones: [...activeDrones.values()] }, true)
     }
   })
+
+  // The direct messages the user allowed, by target and text, while they run;
+  // each covers one relay of itself.
+  const approvedMessages: { key: string; isUsed: boolean }[] = []
+  function holdApprovedMessage(key: string): () => void {
+    const hold = { key, isUsed: false }
+    approvedMessages.push(hold)
+    return () => {
+      const at = approvedMessages.indexOf(hold)
+      if (at >= 0) approvedMessages.splice(at, 1)
+    }
+  }
+  function takeApprovedMessage(key: string): boolean {
+    const hold = approvedMessages.find(h => h.key === key && !h.isUsed)
+    if (hold) hold.isUsed = true
+    return !!hold
+  }
 
   on('classic.PermissionRequest', ($, e, next) => {
     updateReport({ state: 'waiting' satisfies SessionState, waitKind: 'permission' }, true)
@@ -688,34 +706,9 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // The mod's own station calls are approved at tool.check, which settles the
-  // verdict before the mode's decider: an allow from PreToolUse does not keep
-  // auto mode from sending the call to its classifier, which denies it when it
-  // gives no verdict. Only a station call the mod itself has in flight is
-  // approved; the agent's calls get the verdict beneath.
-  on('tool.check', { tool: 'ArtifactData' }, ($, e, next) => {
-    const isOwnOfficeCall = isOwnCall(e.input) && isOfficeCall(allKeys, e.tool, e.input)
-    return isOwnOfficeCall ? { decision: 'allow', reason: 'The agent-station plugin reporting to its station' } : next(e)
-  })
-
-  for (const tool of ['Bash', 'TaskStop']) {
-    on('tool.check', { tool }, ($, e, next) => {
-      return isOwnKeeperCall(e.tool, e.input) ? { decision: 'allow', reason: 'The agent-station plugin keeping the station dispatcher awake' } : next(e)
-    })
-  }
-
-  // The mod's own station calls must never open a permission dialog, also on
-  // an app that does not raise tool.check; the agent's calls go through the
-  // normal permission flow, and the ones in confirmationFor ask the user.
-  // Its firing at all tells the mod the app runs its classic hooks.
-  on('classic.PreToolUse', ($, e, next) => {
-    if (classicHooks !== 'run') setClassicHooks('run')
-    const input = e.tool_input
-    if (isOwnCall(input) && isOfficeCall(allKeys, e.tool_name, input)) return { allow: true }
-    if (isOwnKeeperCall(e.tool_name, input)) return { allow: true }
-    const ask = confirmationFor(e.tool_name, input)
-    return ask ? { ask } : next(e)
-  })
+  // The mod approves nothing of its own at tool.check or PreToolUse: the engine
+  // skips a plugin's own hooks for the calls it makes itself, and asks no dialog
+  // or classifier about them.
 
   // The calls the user confirms before they run, with the reason shown: a
   // message straight to another session (work between rooms goes through
@@ -741,13 +734,8 @@ export const register: Register = (on, options) => {
     return undefined
   }
 
-  function setClassicHooks(state: 'run' | 'skipped') {
-    classicHooks = state
-    if (state === 'skipped') logStationEvent('hooks', 'the app passes over the classic hooks: confirmations are asked as questions and permission waits are read from tool.check')
-  }
-
-  // The confirmation asked as a question, where no PreToolUse can ask it. A
-  // dismissed question, or none possible, refuses the call.
+  // The confirmation asked as a question. A dismissed question, or none
+  // possible, refuses the call.
   async function isConfirmedByUser(askUser: (question: string, options: AskOptions) => Promise<string>, ask: string): Promise<boolean> {
     const language = station?.language
     const allow = tx(language, 'Allow')
@@ -759,12 +747,13 @@ export const register: Register = (on, options) => {
     }
   }
 
-  // Where the app passes over PermissionRequest, a call the permission check
-  // would put to the user is marked as waiting for them. Only in the modes
-  // where the check is the whole decision: auto mode's classifier may still
-  // let the call through, and the mark would stay while it runs.
+  // A call the permission check would put to the user is marked as waiting for
+  // them, also where an organization's security plugin passes over
+  // PermissionRequest. Only in the modes where the check is the whole decision:
+  // auto mode's classifier may still let the call through, and the mark would
+  // stay while it runs.
   async function isPermissionDialogLikely(check: (args: { tool: string; input: unknown }) => Promise<{ decision: string }>, sleep: (ms: number) => Promise<unknown>, e: any): Promise<boolean> {
-    if (classicHooks !== 'skipped' || !PERMISSION_CHECKED_MODES.has(String(report.permissionMode ?? ''))) return false
+    if (!PERMISSION_CHECKED_MODES.has(String(report.permissionMode ?? ''))) return false
     const { tool, tool_use_id: _id, agentId: _agent, ...input } = e
     const verdict = await Promise.race([check({ tool, input }).catch(() => undefined), sleep(PERMISSION_CHECK_MS).then(() => undefined)])
     return verdict?.decision === 'ask'
@@ -1173,7 +1162,7 @@ export const register: Register = (on, options) => {
       if (!rooms.some(room => room.folder === folder) && !groups.length) return `Not proposed: this station has no room with the folder "${folder}". Its rooms, by folder, are: ${roomsLine(station)}.`
     }
     const base = input.base === undefined || input.base === null || String(input.base).trim() === '' ? null : String(input.base).trim()
-    if (base !== null && !isBranchName(base)) return `Not proposed: "${base.slice(0, 80)}" is not a branch name. Give the branch as git shows it (letters, digits and . _ / -), or leave base out to start from the branch the room's checkout is on.`
+    if (base !== null && !isBranchName(base)) return `Not proposed: "${String(base).slice(0, 80)}" is not a branch name. Give the branch as git shows it (letters, digits and . _ / -), or leave base out to start from the branch the room's checkout is on.`
     const mode = ORDER_MODES.has(String(input.mode)) ? String(input.mode) : 'any'
     const found = mode === 'new' ? undefined : await findReplyTarget(folder, input.session_id ? String(input.session_id).trim() : '')
     if (typeof found === 'string') return found
