@@ -68,6 +68,7 @@ test('reports the session to the station without blocking the tool', { options }
   expect(first.action).toBe('set')
   expect(first.data.state).toBe('working')
   expect(first.data.folder).toBe('app')
+  expect(first.data.engineSessionId).toBe('test-session-1')
 })
 
 test('the detail of a tool call names the file, never its folder, and leaves the arguments out of commands', { options }, async ($, on) => {
@@ -968,6 +969,8 @@ test('a message from another session reminds the coordination that it forwards n
   expect(peerContext).toContain('no go-between for the rooms')
   expect(peerContext).toContain('mcp__agent-station__propose_order')
   expect(fromUser.context ?? []).toEqual([])
+  const fromThread: any = await ($ as any).prompt.submit({ text: 'Result of the thread', origin: { kind: 'projects-relay' } })
+  expect(String((fromThread.context ?? []).join('\n'))).toContain('no go-between for the rooms')
 })
 
 test('propose_order stores a long order whole and refuses one past the limit without cutting it', { options }, async ($, on) => {

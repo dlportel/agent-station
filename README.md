@@ -78,7 +78,7 @@ and only in a folder you set for a folder room (see *Folder rooms and places*).
   session tools. For the same reason, on Linux sessions report and propose orders but nothing can
   deliver them.
 - A version of the app the station supports: checked up to the Claude desktop app 5.11492, with
-  Claude Code 2.1.325. The plugin declares Claude Code 2.1.321 as its minimum (`engines` in its
+  Claude Code 2.1.325. The plugin declares Claude Code 2.1.323 as its minimum (`engines` in its
   `plugin.json`). Whether the app offers task cards for new sessions (`spawn_task`) depends on the
   account and can change without a new version of the app: where it does, the dispatcher leaves a
   card in the coordination session; where it does not, a new session opens from the order's OPEN
@@ -236,6 +236,11 @@ after `/reload-plugins` and a message.
 
 **The coordination command.** `/coordinator <message>` (`/coordinador` in Spanish) sends a note
 about a problem with the station to the coordination session on the same machine.
+
+**The station's look.** `/station-look` (`/aspecto` in Spanish) gives the Claude app a look of the
+station, its colours and a starfield behind the conversation, in the sessions of its rooms on that
+computer; `/station-look <look>` chooses another look the station has, and `/station-look off`
+turns it off. It is off unless you turn it on.
 
 ## Configuration
 

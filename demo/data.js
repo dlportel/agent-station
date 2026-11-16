@@ -8,7 +8,7 @@
   const now = Date.now();
   // What the page changed in a session (disconnecting it) stays on top of its made-up fields.
   const sessionPatches = {};
-  const session = (id, folder, state, model, extra) => ({ id, data: () => ({ folder, title: id, state, model, lastEventAt: now - 20000, startedAt: now - 3600000, machine: "LAPTOP", modVersion: "1.2.101", drones: [], ...extra, ...sessionPatches[id] }) });
+  const session = (id, folder, state, model, extra) => ({ id, data: () => ({ folder, title: id, state, model, lastEventAt: now - 20000, startedAt: now - 3600000, machine: "LAPTOP", modVersion: "1.2.106", drones: [], ...extra, ...sessionPatches[id] }) });
   const sessions = [
     session("web-1", "web", "working", "claude-opus-5-5", { title: "Pricing page redesign", tool: "Edit", detail: "pricing.astro" }),
     session("web-2", "web", "waiting", "claude-sonnet-5-5", { title: "Blog images", waitKind: "permission", tool: "Bash", detail: "npm" }),
@@ -27,8 +27,8 @@
   const proposal = { text: "The mobile app needs a delta endpoint for offline sync: GET /v2/changes?since=<cursor>, returning the records changed since the cursor and the next cursor. Add it with tests and document it in the OpenAPI schema.", folder: "api", mode: "any", status: "proposed", createdAt: now - 120000, reason: "Offline sync in the app cannot ship without it", proposedBy: { sessionId: "mob-asker", title: "Offline sync", folder: "mobile" } };
   const orders = [
     order("p_demo", proposal),
-    order("o1", { text: "Update the changelog for 2.4", folder: "docs", mode: "any", status: "delivered", createdAt: now - 3600000, deliveredAt: now - 3500000, deliveredTo: "docs-1", deliveredTitle: "Getting started guide" }),
-    order("o2", { text: "Review the pricing copy", folder: "web", mode: "any", status: "delivered", createdAt: now - 1800000, deliveredAt: now - 1700000, deliveredTo: "web-1", deliveredTitle: "Pricing page redesign", model: "claude-opus-5-5" }),
+    order("o1", { text: "Update the changelog for 2.4", folder: "docs", mode: "any", status: "delivered", createdAt: now - 3600000, deliveredAt: now - 3500000, finishedAt: now - 3300000, deliveredTo: "docs-1", deliveredTitle: "Getting started guide" }),
+    order("o2", { text: "Review the pricing copy", folder: "web", mode: "any", status: "delivered", createdAt: now - 1800000, approvedAt: now - 1750000, approvedVia: "chat", deliveredAt: now - 1700000, deliveredTo: "web-1", deliveredTitle: "Pricing page redesign", model: "claude-opus-5-5" }),
   ];
   // The demo's dispatcher never stops: its lease stays fresh however long the page is open.
   const dispatchers = [{ id: "LAPTOP", data: () => ({ sessionId: "coord-1", machine: "LAPTOP", heartbeatAt: now + 7 * 864e5 }) }];

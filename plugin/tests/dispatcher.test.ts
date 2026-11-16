@@ -64,7 +64,14 @@ function fakeOfficeDatabase(on: any, failWrite: (e: any) => boolean = () => fals
   })
   return {
     seed: (collection: string, id: string, data: Record<string, any>) => store.set(key(collection, id), { data, version: 1 }),
-    read: (collection: string, id: string) => store.get(key(collection, id))?.data,
+    // A write of someone else (the page), which moves the version on.
+    change: (collection: string, id: string, patch: Record<string, any>) => {
+      const doc = store.get(key(collection, id))!
+      store.set(key(collection, id), { data: { ...doc.data, ...patch }, version: doc.version + 1 })
+    },
+    read:(collection: string, id: string) => store.get(key(collection, id))?.data,
+    remove: (collection: string, id: string) => store.delete(key(collection, id)),
+    ids: (collection: string) => [...store.keys()].filter(k => k.startsWith(`${collection}/`)).map(k => k.slice(collection.length + 1)),
   }
 }
 
@@ -1801,6 +1808,357 @@ test('a long order gets a short link, and keeps its whole message for the sessio
   await clock.advance(60_000)
 })
 
+test('a delivered order is finished once its session ends a turn the order started, and only then', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [], [
+    { sessionId: 'local_done', isArchived: false, isRunning: true },
+    { sessionId: 'local_busy', isArchived: false, isRunning: true },
+    { sessionId: 'local_queued', isArchived: false, isRunning: true },
+    { sessionId: 'local_opened', isArchived: false, isRunning: true },
+  ])
+  stubGit(on)
+  const db = fakeOfficeDatabase(on)
+  const now = Date.now()
+  const session = (state: string, turnStartedAt: number, extra: Record<string, any> = {}) => ({ folder: 'app', machine: 'TESTPC', state, turnStartedAt, lastEventAt: now - 1000, ...extra })
+  const delivered = (deliveredTo: string, extra: Record<string, any> = {}) => ({ text: 'Do it', folder: 'app', mode: 'any', status: 'delivered', claimedBy: 'TESTPC', deliveredTo, deliveredAt: now - 60_000, createdAt: now - 120_000, ...extra })
+  db.seed('sessions', 'local_done', session('idle', now - 50_000))
+  db.seed('sessions', 'local_busy', session('working', now - 50_000))
+  // Idle after the turn that was running when the order came; the order's own turn has not begun.
+  db.seed('sessions', 'local_queued', session('idle', now - 90_000))
+  // A session the order opened: its first turn began before the order was marked delivered.
+  db.seed('sessions', 'local_opened', session('idle', now - 70_000, { fromOrder: 'o4' }))
+  db.seed('orders', 'o1', delivered('local_done'))
+  db.seed('orders', 'o2', delivered('local_busy'))
+  db.seed('orders', 'o3', delivered('local_queued'))
+  db.seed('orders', 'o4', delivered('local_opened'))
+  db.seed('orders', 'o5', delivered('local_gone'))
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+
+  expect(db.read('orders', 'o1')?.finishedAt).toBe(now - 1000)
+  expect(db.read('orders', 'o2')?.finishedAt).toBeUndefined()
+  expect(db.read('orders', 'o3')?.finishedAt).toBeUndefined()
+  expect(db.read('orders', 'o4')?.finishedAt).toBe(now - 1000)
+  expect(db.read('orders', 'o5')?.finishedAt).toBeUndefined()
+  expect(db.read('orders', 'o1')?.status).toBe('delivered')
+  await clock.advance(60_000)
+})
+
+test('a finished order moves to the end of the turn its background work started, for the latest order only', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [], [
+    { sessionId: 'local_bg', isArchived: false, isRunning: true },
+    { sessionId: 'local_user', isArchived: false, isRunning: true },
+  ])
+  stubGit(on)
+  const db = fakeOfficeDatabase(on)
+  const now = Date.now()
+  const finishedAt = now - 40_000
+  const delivered = (deliveredTo: string, deliveredAt: number) => ({ text: 'Do it', folder: 'app', mode: 'any', status: 'delivered', claimedBy: 'TESTPC', deliveredTo, deliveredAt, finishedAt, createdAt: deliveredAt - 1000 })
+  // The background task's notice started a turn after the order's turn ended.
+  db.seed('sessions', 'local_bg', { folder: 'app', machine: 'TESTPC', state: 'idle', turnStartedAt: now - 10_000, turnOrigin: 'task-notification', lastEventAt: now - 2000 })
+  // The user typed the next turn: that is other work.
+  db.seed('sessions', 'local_user', { folder: 'app', machine: 'TESTPC', state: 'idle', turnStartedAt: now - 10_000, turnOrigin: 'sdk', lastEventAt: now - 2000 })
+  db.seed('orders', 'latest', delivered('local_bg', now - 60_000))
+  db.seed('orders', 'older', delivered('local_bg', now - 3_600_000))
+  db.seed('orders', 'typed', delivered('local_user', now - 60_000))
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+
+  expect(db.read('orders', 'latest')?.finishedAt).toBe(now - 2000)
+  expect(db.read('orders', 'older')?.finishedAt).toBe(finishedAt)
+  expect(db.read('orders', 'typed')?.finishedAt).toBe(finishedAt)
+  await clock.advance(60_000)
+})
+
+// review_orders: the user's answer to its confirmation, and the questions asked.
+function answerReview(on: any, answer: string, asked: any[] = []) {
+  registersTools(on)
+  on('tool.call', { tool: 'AskUserQuestion' }, (_$: any, e: any) => {
+    asked.push(e)
+    return { result: { questions: e.questions, answers: { [e.questions[0].question]: answer } } } as any
+  })
+}
+// A turn the user typed in the desktop app, which leaves it unstamped.
+async function userTurn($: any, _on: any, text: string) {
+  await $.prompt.submit({ text })
+}
+// The engine's side for the coordination tools, a prompt and a turn's end.
+const registersTools = (on: any) => {
+  on('tool.register' as any, (_$: any, e: any) => ({ value: { tool: `mcp__agent-station__${e.name}` } }))
+  on('prompt.submit' as any, (_$: any, e: any) => ({ text: e.text, context: e.context }))
+  on('turn.complete' as any, (_$: any, e: any) => ({ text: e.answer ?? '' }))
+}
+async function endTurn($: any) {
+  await $.turn.complete({ answer: 'ok', durationMs: 5, isAborted: false, turnId: `t-${Math.random()}`, reason: 'answer' })
+}
+const REVIEW = 'mcp__agent-station__review_orders'
+const proposal = (text: string, folder = 'app', createdAt = 1) => ({ text, folder, mode: 'any', status: 'proposed', reason: 'Because', proposedBy: { sessionId: 'local_legal', title: 'Legal work', folder: 'legal' }, createdAt })
+
+const ORDERS_PANE = {
+  plugin: 'agent-station',
+  component: 'Pane',
+  requestId: 'station-orders',
+  props: { title: 'Station orders', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
+} as const
+
+test('the coordination session opens its orders pane, and a press approves or rejects as the page does', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const opened: any[] = []
+  stubEngine(on, [])
+  stubGit(on)
+  registersTools(on)
+  on('ui.open' as any, (_$: any, e: any) => { opened.push(e); return { value: { isPlaced: true } } })
+  const db = fakeOfficeDatabase(on)
+  db.seed('orders', 'p1', proposal('Fix the login page', 'app', 1))
+  db.seed('orders', 'p2', proposal('Translate the release notes', 'legal', 2))
+  db.seed('orders', 'done', { ...proposal('Already approved', 'app', 3), status: 'pending' })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+  expect(opened.some(e => e.id === 'station-orders')).toBe(true)
+
+  const ui = await ($ as any).ui.mount({ ...ORDERS_PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /2 orders wait for your approval/ }))?.text).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Fix the login page/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Already approved/ })).toBeUndefined()
+
+  await ui.press({ key: 'approve-p1' })
+  await ui.press({ key: 'reject-p2' })
+  await clock.advance(1000)
+
+  expect(db.read('orders', 'p1')).toMatchObject({ status: 'pending', approvedVia: 'panel' })
+  expect(db.read('orders', 'p2')).toMatchObject({ status: 'rejected', rejectedVia: 'panel' })
+  expect(await ui.find({ type: 'Text', text: /No order waits for your approval/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Rejected: the order for/ })).toBeTruthy()
+  await ui.unmount()
+  await clock.advance(60_000)
+})
+
+test('a press on an order changed in the page meanwhile leaves it, and says so', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [])
+  stubGit(on)
+  registersTools(on)
+  on('ui.open' as any, () => ({ value: { isPlaced: true } }))
+  const db = fakeOfficeDatabase(on)
+  db.seed('orders', 'p1', proposal('Fix the login page'))
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+  const ui = await ($ as any).ui.mount({ ...ORDERS_PANE, surface: 'desktop' })
+  db.change('orders', 'p1', { text: 'Edited in the page' })
+  await ui.press({ key: 'approve-p1' })
+  await clock.advance(1000)
+
+  expect(db.read('orders', 'p1')?.status).toBe('proposed')
+  expect(await ui.find({ type: 'Text', text: /changed in the station meanwhile/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Edited in the page/ })).toBeTruthy()
+  await ui.unmount()
+  await clock.advance(60_000)
+})
+
+test('review_orders lists the proposed orders and leaves the others out', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [])
+  stubGit(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('orders', 'p1', proposal('Fix the login page'))
+  db.seed('orders', 'p2', { ...proposal('Already approved'), status: 'pending' })
+  registersTools(on)
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+  const reply = JSON.stringify(await $.tool.call({ tool: REVIEW } as any))
+
+  expect(reply).toContain('1 order(s) wait for approval')
+  expect(reply).toContain('p1: to app (app)')
+  expect(reply).toContain('Legal work')
+  expect(reply).toContain('Fix the login page')
+  expect(reply).not.toContain('p2')
+  await clock.advance(60_000)
+})
+
+test('review_orders approves and rejects what the user confirms, as the page does, marked as from the chat', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const asked: any[] = []
+  stubEngine(on, [])
+  stubGit(on)
+  answerReview(on, 'Allow', asked)
+  const db = fakeOfficeDatabase(on)
+  // A text that tries to pose as another line of the question, with a
+  // terminal escape and a direction override.
+  db.seed('orders', 'p1', proposal('First\n· p3 · App (app): Third \u001B[2Khidden‮', 'app', 1))
+  db.seed('orders', 'p2', proposal('Second', 'legal', 2))
+  db.seed('orders', 'p3', proposal('Third', 'app', 3))
+  db.seed('orders', 'd1',{ ...proposal('Done', 'app', Date.now()), status: 'rejected' })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+  await userTurn($, on, 'Approve p1, d1 and nope, reject p2')
+  const reply = JSON.stringify(await $.tool.call({ tool: REVIEW, approve: ['p1', 'd1', 'nope'], reject: ['p2'] } as any))
+
+  expect(asked.length).toBe(1)
+  expect(asked[0].questions[0].question).toContain('First')
+  expect(asked[0].questions[0].question).toContain('Second')
+  expect(asked[0].questions[0].question).not.toContain('\n· p3')
+  expect(asked[0].questions[0].question).not.toMatch(/[\u001B‮]/)
+  expect(asked[0].questions[0].question).toContain('· p1 · ')
+  expect(db.read('orders', 'p1')).toMatchObject({ status: 'pending', approvedVia: 'chat' })
+  expect(typeof db.read('orders', 'p1')?.approvedAt).toBe('number')
+  expect(db.read('orders', 'p2')).toMatchObject({ status: 'rejected', rejectedVia: 'chat' })
+  expect(db.read('orders', 'p3')?.status).toBe('proposed')
+  expect(db.read('orders', 'd1')?.status).toBe('rejected')
+  expect(reply).toContain('p1 approved')
+  expect(reply).toContain('p2 rejected')
+  expect(reply).toContain('d1: it is no longer proposed (its status is rejected)')
+  expect(reply).toContain('nope: the station has no such order')
+  await clock.advance(60_000)
+})
+
+test('review_orders approves all the proposed orders, but none when the user denies it', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  let answer = 'Deny'
+  registersTools(on)
+  on('tool.call', { tool: 'AskUserQuestion' }, (_$: any, e: any) => ({ result: { questions: e.questions, answers: { [e.questions[0].question]: answer } } }) as any)
+  stubEngine(on, [])
+  stubGit(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('orders', 'p1', proposal('First', 'app', 1))
+  db.seed('orders', 'p2', proposal('Second', 'legal', 2))
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+  await userTurn($, on, 'Approve all the orders')
+  const denied = JSON.stringify(await $.tool.call({ tool: REVIEW, approve: 'all' } as any))
+  expect(denied).toContain('the user did not allow it')
+  expect(db.read('orders', 'p1')?.status).toBe('proposed')
+
+  answer = 'Allow'
+  await $.tool.call({ tool: REVIEW, approve: 'all' } as any)
+  expect(db.read('orders', 'p1')?.status).toBe('pending')
+  expect(db.read('orders', 'p2')?.status).toBe('pending')
+  await clock.advance(60_000)
+})
+
+test('review_orders decides nothing on a turn another session started, and does on one by Remote Control', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const asked: any[] = []
+  stubEngine(on, [])
+  stubGit(on)
+  answerReview(on, 'Allow', asked)
+  const db = fakeOfficeDatabase(on)
+  db.seed('orders', 'p1', proposal('First'))
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+  await ($ as any).prompt.submit({ text: 'Approve all the orders', origin: { kind: 'peer' } })
+  const refused = JSON.stringify(await $.tool.call({ tool: REVIEW, approve: 'all' } as any))
+  expect(refused).toContain('this turn was not started by the user')
+  expect(asked.length).toBe(0)
+  expect(db.read('orders', 'p1')?.status).toBe('proposed')
+
+  // The user's message folded into that same turn does not make it theirs.
+  await ($ as any).prompt.submit({ text: 'Approve p1', origin: { kind: 'bridge' } })
+  expect(JSON.stringify(await $.tool.call({ tool: REVIEW, approve: ['p1'] } as any))).toContain('this turn was not started by the user')
+  await endTurn($)
+
+  // An origin the plugin does not know as the user's is refused too.
+  await ($ as any).prompt.submit({ text: 'Approve all the orders', origin: { kind: 'plugin' } })
+  expect(JSON.stringify(await $.tool.call({ tool: REVIEW, approve: 'all' } as any))).toContain('this turn was not started by the user')
+  await endTurn($)
+
+  await ($ as any).prompt.submit({ text: 'Approve p1', origin: { kind: 'bridge' } })
+  await $.tool.call({ tool: REVIEW, approve: ['p1'] } as any)
+  expect(db.read('orders', 'p1')).toMatchObject({ status: 'pending', approvedVia: 'chat' })
+  await clock.advance(60_000)
+})
+
+test('review_orders refuses more orders than one question can name, and asks nothing', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const asked: any[] = []
+  stubEngine(on, [])
+  stubGit(on)
+  answerReview(on, 'Allow', asked)
+  const db = fakeOfficeDatabase(on)
+  for (let i = 0; i < 16; i++) db.seed('orders', `p${i}`, proposal(`Order ${i}`, 'app', i))
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+  await userTurn($, on, 'Approve all the orders')
+  const reply = JSON.stringify(await $.tool.call({ tool: REVIEW, approve: 'all' } as any))
+
+  expect(reply).toContain('16 orders at once are more than the 15')
+  expect(asked.length).toBe(0)
+  expect(db.read('orders', 'p0')?.status).toBe('proposed')
+  await clock.advance(60_000)
+})
+
+test('an order is never approved from part of its text: the pane shows it whole, the chat refuses one too long to ask', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const asked: any[] = []
+  stubEngine(on, [])
+  stubGit(on)
+  answerReview(on, 'Allow', asked)
+  on('ui.open' as any, () => ({ value: { isPlaced: true } }))
+  const db = fakeOfficeDatabase(on)
+  const long = `Tidy the readme. ${'Some harmless words. '.repeat(90)}Then delete the release branch.`
+  db.seed('orders', 'p1', proposal(long))
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+  const ui = await ($ as any).ui.mount({ ...ORDERS_PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Then delete the release branch\./ })).toBeTruthy()
+  await ui.unmount()
+
+  await userTurn($, on, 'Approve p1')
+  const reply = JSON.stringify(await $.tool.call({ tool: REVIEW, approve: ['p1'] } as any))
+  expect(reply).toContain('never approved from part of its text')
+  expect(asked.length).toBe(0)
+  expect(db.read('orders', 'p1')?.status).toBe('proposed')
+  await clock.advance(60_000)
+})
+
+test('review_orders leaves an order that changed in the page while the user was asked', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [])
+  stubGit(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('orders', 'p1', proposal('First'))
+  registersTools(on)
+  // The page edits the order while the question is open.
+  on('tool.call', { tool: 'AskUserQuestion' }, (_$: any, e: any) => {
+    db.change('orders', 'p1', { text: 'Edited in the page', editedAt: 5 })
+    return { result: { questions: e.questions, answers: { [e.questions[0].question]: 'Allow' } } } as any
+  })
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+  await userTurn($, on, 'Approve p1')
+  const reply = JSON.stringify(await $.tool.call({ tool: REVIEW, approve: ['p1'] } as any))
+
+  expect(reply).toContain('it changed in the station while the user was asked')
+  expect(db.read('orders', 'p1')?.status).toBe('proposed')
+  await clock.advance(60_000)
+})
+
+test('the coordination session is told to decide proposed orders with review_orders', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [])
+  stubGit(on)
+  fakeOfficeDatabase(on)
+  on('prompt.submit' as any, (_$: any, e: any) => ({ text: e.text, context: e.context }))
+
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+  const first: any = await ($ as any).prompt.submit({ text: 'hello' })
+
+  expect((first.context ?? []).join(' ')).toContain(REVIEW)
+  await clock.advance(60_000)
+})
+
 test('open_pending_orders starts each waiting order in its room, detaches it and delivers it', { options }, async ($, on) => {
   const clock = mock.clock(on)
   const mcpCalls: any[] = []
@@ -1954,4 +2312,257 @@ test('a long order with an emoji where its excerpt ends still gets its link', { 
   expect(db.read('orders', 'u1')?.status).toBe('needs_click')
   expect(String(db.read('orders', 'u1')?.openLink)).toContain('claude://code/new?q=')
   await clock.advance(60_000)
+})
+
+// A tool call's row in the transcript, as the engine raises it.
+const toolRow = (tool: string, id: string) => ({
+  plugin: 'agent-station',
+  component: 'ToolUse',
+  requestId: id,
+  props: { tool_use_id: id, tool, input: {}, isRunning: false, isErrored: false, isInterrupted: false },
+}) as any
+const PROPOSE = 'mcp__agent-station__propose_order'
+// The engine's own row, which the mod's card keeps inside it.
+const drawsRows = (on: any) => on('ui.render', { component: 'ToolUse' }, ($: any, e: any) => {
+  const { Text } = $.ui.resolve(e)
+  return h(Text, null, `row ${e.props.tool}`)
+})
+
+test('the row of a propose_order call follows its order, until the turn it started is done', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [], [], [], undefined, 'C:/work/legal')
+  stubGit(on)
+  registersTools(on)
+  drawsRows(on)
+  const db = fakeOfficeDatabase(on)
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+
+  await $.tool.call({ tool: PROPOSE, tool_use_id: 'tu1', folder: 'app', text: 'Fix the login page', reason: 'Users cannot sign in' } as any)
+  const [orderId] = db.ids('orders')
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await ($ as any).ui.mount({ ...toolRow(PROPOSE, 'tu1'), surface })
+    expect(await ui.find({ type: 'Text', text: /row mcp__agent-station__propose_order/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /waiting for your approval in the station/ })).toBeTruthy()
+    await ui.unmount()
+  }
+
+  db.change('orders', orderId, { status: 'delivered', deliveredTo: 'local_app', deliveredTitle: 'Login work', deliveredAt: Date.now() })
+  await clock.advance(60_000)
+  let ui = await ($ as any).ui.mount({ ...toolRow(PROPOSE, 'tu1'), surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /delivered to «Login work»/ })).toBeTruthy()
+  await ui.unmount()
+
+  db.change('orders', orderId, { finishedAt: Date.now() })
+  await clock.advance(60_000)
+  ui = await ($ as any).ui.mount({ ...toolRow(PROPOSE, 'tu1'), surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /done; «Login work» finished/ })).toBeTruthy()
+  await ui.unmount()
+
+  // Another tool's row, and a proposal this session has no card for, stay as they are.
+  for (const [tool, id] of [['Read', 'tu2'], [PROPOSE, 'tu3']]) {
+    ui = await ($ as any).ui.mount({ ...toolRow(tool, id), surface: 'desktop' })
+    expect(await ui.find({ type: 'Text', text: /Order to/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: new RegExp(`row ${tool}`) })).toBeTruthy()
+    await ui.unmount()
+  }
+  await clock.advance(60_000)
+})
+
+test('a rejected proposal says so, and is not read again', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const reads: string[] = []
+  stubEngine(on, [], [], [], undefined, 'C:/work/legal')
+  stubGit(on)
+  registersTools(on)
+  drawsRows(on)
+  on('tool.call', { tool: 'ArtifactData' }, ($: any, e: any, next: any) => {
+    if (e.action === 'get' && e.collection === 'orders') reads.push(e.doc_id)
+    return next(e)
+  })
+  const db = fakeOfficeDatabase(on)
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+  await $.tool.call({ tool: PROPOSE, tool_use_id: 'tu1', folder: 'app', text: 'Fix it', reason: 'Broken' } as any)
+  const [orderId] = db.ids('orders')
+  db.change('orders', orderId, { status: 'rejected' })
+  await clock.advance(60_000)
+  await clock.advance(60_000)
+  await clock.advance(60_000)
+
+  const ui = await ($ as any).ui.mount({ ...toolRow(PROPOSE, 'tu1'), surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Order to .*: rejected/ })).toBeTruthy()
+  await ui.unmount()
+  expect(reads.filter(id => id === orderId).length).toBe(1)
+})
+
+const BAND = {
+  plugin: 'agent-station',
+  component: 'AbovePrompt',
+  requestId: 'band',
+  props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 } },
+} as any
+
+test('the band above the coordination prompt says how many orders wait and opens the pane', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  const opened: any[] = []
+  stubEngine(on, [])
+  stubGit(on)
+  registersTools(on)
+  on('ui.open' as any, (_$: any, e: any) => { opened.push(e); return { value: { isPlaced: true } } })
+  const db = fakeOfficeDatabase(on)
+  db.seed('orders', 'p1', proposal('Fix the login page', 'app', 1))
+  db.seed('orders', 'p2', proposal('Translate the notes', 'legal', 2))
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await ($ as any).ui.mount({ ...BAND, surface })
+    expect(await ui.find({ type: 'Text', text: /2 orders wait for your approval/ })).toBeTruthy()
+    opened.length = 0
+    await ui.press({ key: 'open-orders' })
+    expect(opened.some(e => e.id === 'station-orders')).toBe(true)
+    await ui.unmount()
+  }
+  await clock.advance(60_000)
+})
+
+test('a room session has no band', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [], [], [], undefined, 'C:/work/legal')
+  stubGit(on)
+  registersTools(on)
+  const db = fakeOfficeDatabase(on)
+  db.seed('orders', 'p1', proposal('Fix the login page', 'app', 1))
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+  const ui = await ($ as any).ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /wait for your approval/ })).toBeUndefined()
+  await ui.unmount()
+  await clock.advance(60_000)
+})
+
+// The engine's side of $.store and $.theme, with what the plugin set.
+function stubLookEngine(on: any) {
+  const seen = { themes: [] as any[], cleared: 0, stored: new Map<string, unknown>() }
+  on('store.get' as any, (_$: any, e: any) => ({ value: seen.stored.get(e.key) }))
+  on('store.set' as any, (_$: any, e: any) => { seen.stored.set(e.key, e.value); return { value: undefined } })
+  on('theme.set' as any, (_$: any, e: any) => { seen.themes.push(e); return { value: { isDrawn: true, requestId: 'r1' } } })
+  on('theme.clear' as any, () => { seen.cleared++; return { value: { isDrawn: false, reason: 'cleared' } } })
+  return seen
+}
+
+test('the station look is off until the user turns it on, and the switch clears it again', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [], [], [], undefined, 'C:/work/legal')
+  stubGit(on)
+  registersTools(on)
+  fakeOfficeDatabase(on)
+  const seen = stubLookEngine(on)
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+  expect(seen.themes.length).toBe(0)
+
+  const turnedOn: any = await $.command.run({ command: 'station-look', args: '' } as any)
+  expect(String(turnedOn.text)).toContain('Station look «Space» on')
+  expect(seen.themes[0].colors?.id).toBe('mod-theme')
+  expect(seen.themes[0].backdrop?.scene).toBe('space')
+  expect(seen.stored.get('look')).toBe('space')
+
+  const turnedOff: any = await $.command.run({ command: 'station-look', args: '' } as any)
+  expect(String(turnedOff.text)).toContain('Station look off')
+  expect(seen.cleared).toBe(1)
+  expect(seen.stored.get('look')).toBe(false)
+  await clock.advance(60_000)
+})
+
+test('a look is chosen by its name, an unknown one lists the looks, and off turns it off', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [], [], [], undefined, 'C:/work/legal')
+  stubGit(on)
+  registersTools(on)
+  fakeOfficeDatabase(on)
+  const seen = stubLookEngine(on)
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+
+  const unknown: any = await $.command.run({ command: 'station-look', args: 'jungle' } as any)
+  expect(String(unknown.text)).toContain('There is no look «jungle». Looks: Space.')
+  expect(seen.themes.length).toBe(0)
+
+  await $.command.run({ command: 'station-look', args: 'Espacial' } as any)
+  expect(seen.stored.get('look')).toBe('space')
+  // Naming a look while one is on sets it again rather than turning it off.
+  await $.command.run({ command: 'station-look', args: 'space' } as any)
+  expect(seen.themes.length).toBe(2)
+  expect(seen.cleared).toBe(0)
+
+  await $.command.run({ command: 'station-look', args: 'off' } as any)
+  expect(seen.cleared).toBe(1)
+  // The other language's word turns it off too.
+  await $.command.run({ command: 'station-look', args: 'space' } as any)
+  await $.command.run({ command: 'station-look', args: 'quitar' } as any)
+  expect(seen.cleared).toBe(2)
+  await clock.advance(60_000)
+})
+
+test('a session starts with the look chosen earlier', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  stubEngine(on, [], [], [], undefined, 'C:/work/legal')
+  stubGit(on)
+  registersTools(on)
+  fakeOfficeDatabase(on)
+  const seen = stubLookEngine(on)
+  seen.stored.set('look', 'space')
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+  expect(seen.themes.length).toBe(1)
+  expect(seen.themes[0].backdrop?.scene).toBe('space')
+  await clock.advance(60_000)
+})
+
+test('the space look draws its starfield behind the conversation, and leaves another plugin\'s scene', { options }, async ($, on) => {
+  on('ui.render', { component: 'Backdrop' }, ($: any, e: any) => {
+    const { Text } = $.ui.resolve(e)
+    return h(Text, null, 'engine backdrop')
+  })
+  const backdrop = (plugin: string, scene: string) => ({
+    plugin: 'agent-station', component: 'Backdrop', requestId: 'backdrop', surface: 'desktop',
+    props: { scene, plugin, glass: { blur: 16, opacity: 0.72 } },
+  }) as any
+  let ui = await ($ as any).ui.mount(backdrop('agent-station', 'space'))
+  const svg = await ui.find({ type: 'Svg' })
+  expect(String(svg?.props?.source ?? svg?.source ?? '')).toContain('<svg')
+  await ui.unmount()
+
+  ui = await ($ as any).ui.mount(backdrop('someone-else', 'space'))
+  expect(await ui.find({ type: 'Text', text: /engine backdrop/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('a proposal the station no longer has says so, and a failed read settles nothing', { options }, async ($, on) => {
+  const clock = mock.clock(on)
+  let isFailing = false
+  stubEngine(on, [], [], [], undefined, 'C:/work/legal')
+  stubGit(on)
+  registersTools(on)
+  drawsRows(on)
+  const db = fakeOfficeDatabase(on, () => false, e => isFailing && e.action === 'get' && e.collection === 'orders' ? 'db read failed: not found (network error)' : undefined)
+  await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
+  await clock.advance(10_000)
+  await $.tool.call({ tool: PROPOSE, tool_use_id: 'tu1', folder: 'app', text: 'Fix it', reason: 'Broken' } as any)
+  const [orderId] = db.ids('orders')
+
+  isFailing = true
+  await clock.advance(60_000)
+  let ui = await ($ as any).ui.mount({ ...toolRow(PROPOSE, 'tu1'), surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /waiting for your approval/ })).toBeTruthy()
+  await ui.unmount()
+
+  isFailing = false
+  db.remove('orders', orderId)
+  await clock.advance(60_000)
+  ui = await ($ as any).ui.mount({ ...toolRow(PROPOSE, 'tu1'), surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /no longer in the station/ })).toBeTruthy()
+  await ui.unmount()
 })

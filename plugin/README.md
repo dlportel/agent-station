@@ -27,7 +27,10 @@ check it before installing.
   the normal permission flow.
 - **The propose_order tool** (`tool.call`): `propose_order` is a tool the plugin registers itself,
   so it answers that call itself: it writes the proposed order to the station, where it waits for
-  your approval. The coordination session also gets `open_pending_orders`, which opens a new
+  your approval. The coordination session also gets an orders pane (`ui.render`) with an Approve
+  and a Reject button for each proposed order, `review_orders`, which lists the proposed
+  orders and approves or rejects the ones you name in the chat, after you confirm them,
+  `open_pending_orders`, which opens a new
   session for each order waiting for one when you ask it to, `find_repos`, which looks for the station's
   repos on the machine again, and `mark_folder_room`, which writes a folder room's mark when you
   ask for it.

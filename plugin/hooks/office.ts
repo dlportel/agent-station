@@ -27,6 +27,14 @@ export type EngineIo = {
   // reload of the plugin can tell the older loop to stop.
   readDispatcherGeneration?: () => Promise<string | undefined>
   writeDispatcherGeneration?: (generation: string) => Promise<void>
+  // What the coordination session's orders pane draws, held by the host so a
+  // write redraws it.
+  writePanelOrders?: (orders: unknown[]) => Promise<void>
+  writeOrdersNote?: (note: string) => Promise<void>
+  // What became of each order this session proposed, by the tool_use_id of the
+  // call that proposed it; null drops a card.
+  readProposalCards?: () => Promise<Record<string, any>>
+  writeProposalCards?: (changes: Record<string, any>) => Promise<void>
 }
 
 export type OfficeReply = {

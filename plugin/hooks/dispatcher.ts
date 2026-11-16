@@ -24,6 +24,9 @@ export type DispatcherContext = {
   // Told, while this session dispatches, whether the station wants its process
   // kept awake (config/departments keepAwake).
   setKeepAwake?: (isWanted: boolean) => void
+  // Run once each round, with or without the lease: the coordination session's
+  // orders pane reads the proposed orders again.
+  onRound?: () => Promise<void>
 }
 
 // showsIssues is false for a repo whose rule says issues: false, and for a
@@ -232,6 +235,8 @@ const SESSION_LIST_LIMIT = 200
 const ENDED_RETENTION_MS = 7 * 24 * 60 * 60_000
 const STALE_SESSION_MS = 10 * 60_000
 const ORDER_RETENTION_MS = 30 * 24 * 60 * 60_000
+// The latest delivered orders checked for having finished, each reconcile.
+const FINISH_CHECK_LIMIT = 50
 const MODEL_ID_PATTERN = /claude-[a-z0-9][a-z0-9.-]*[a-z0-9]/g
 
 export function startDispatcherInBackground(context: DispatcherContext) {
@@ -239,6 +244,8 @@ export function startDispatcherInBackground(context: DispatcherContext) {
     // Counted only while holding the lease, so a session that takes it over
     // scans handoffs and reconciles on its first turn.
     let polls = 0
+    // Every round, with or without the lease.
+    let rounds = 0
     let leaseRenewedAt = 0
     let hasScannedAgents = false
     // The last request to read the handoffs now that the page left, so each one
@@ -276,6 +283,13 @@ export function startDispatcherInBackground(context: DispatcherContext) {
           polls++
         }
       } catch {}
+      // Every coordination session, with or without the lease: the finished
+      // orders of its own machine's sessions, and its orders pane.
+      try {
+        if (rounds % RECONCILE_EVERY_POLLS === 0) await markFinishedOrdersOfMachine(context)
+        await context.onRound?.()
+      } catch {}
+      rounds++
       const nextPollAt = await clockNow(context) + POLL_MS
       for (let left = POLL_MS; left > 0 && context.isAlive(); left = nextPollAt - await clockNow(context)) {
         const hasSlept = await context.io.sleep(Math.min(ASK_CHECK_MS, left)).then(() => true, () => false)
@@ -654,7 +668,8 @@ async function reconcileSessions(context: DispatcherContext) {
     query: { where: [['machine', '==', context.machine]], limit: 500 },
   })
   if (!reply.isOk) return
-  for (const session of parseDocs(reply.text)) {
+  const sessions = parseDocs(reply.text)
+  for (const session of sessions) {
     if (!context.isAlive()) return
     if (session.id === context.ownSessionId || !session.id.startsWith('local_')) continue
     if (session.data.state === 'ended') {
@@ -687,6 +702,49 @@ async function reconcileSessions(context: DispatcherContext) {
       data: { state: 'ended', tool: null, endedAt: Date.now(), endReason },
       if_version: session.version,
     })
+  }
+}
+
+// A delivered order is finished once its session ends a turn the order started:
+// the first turn of a session the order opened (fromOrder), or a turn that began
+// after the delivery in an open one, so a queued order waits for the turn that
+// was running when it arrived. Work the turn left running in the background
+// ends in a turn of its own, started by that task's notice: finishedAt moves to
+// its end, for the latest order of that session only. Finished means the turn
+// ended, not that the work is complete: the session may have stopped to ask
+// the user something.
+async function markFinishedOrdersOfMachine(context: DispatcherContext) {
+  const sessionsReply = await callOffice(context.io, context.officeUrl, {
+    action: 'query',
+    collection: 'sessions',
+    query: { where: [['machine', '==', context.machine]], limit: 500 },
+  })
+  if (!sessionsReply.isOk) return
+  const byId = new Map(parseDocs(sessionsReply.text).map(session => [session.id, session]))
+  const reply = await callOffice(context.io, context.officeUrl, {
+    action: 'query',
+    collection: 'orders',
+    query: { where: [['status', '==', 'delivered']], order_by: { field: 'deliveredAt', direction: 'desc' }, limit: FINISH_CHECK_LIMIT },
+  })
+  if (!reply.isOk) return
+  const orders = parseDocs(reply.text).sort((a, b) => Number(b.data.deliveredAt ?? 0) - Number(a.data.deliveredAt ?? 0))
+  const latestOrderOf = new Map<string, string>()
+  for (const order of orders) if (!latestOrderOf.has(String(order.data.deliveredTo ?? ''))) latestOrderOf.set(String(order.data.deliveredTo ?? ''), order.id)
+  for (const order of orders) {
+    if (!context.isAlive()) return
+    const session = byId.get(String(order.data.deliveredTo ?? ''))
+    if (!session || session.data.state !== 'idle') continue
+    const turnAt = Number(session.data.turnStartedAt ?? 0)
+    const endedAt = Number(session.data.lastEventAt) || Date.now()
+    const finishedAt = Number(order.data.finishedAt ?? 0)
+    if (finishedAt) {
+      const isFollowUp = session.data.turnOrigin === 'task-notification' && turnAt > finishedAt && endedAt > finishedAt && latestOrderOf.get(session.id) === order.id
+      if (isFollowUp) await updateOrder(context, order, { finishedAt: endedAt })
+      continue
+    }
+    const isOrderSession = session.data.fromOrder === orderClaim(order.id, order.data.attempt)
+    if (!turnAt || (!isOrderSession && turnAt <= Number(order.data.deliveredAt ?? 0))) continue
+    await updateOrder(context, order, { finishedAt: endedAt })
   }
 }
 

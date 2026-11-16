@@ -1143,7 +1143,7 @@ function knownModels() {
 const demo = { sessions: [], orders: [], phase: null, sleepy: false, n: 0 };
 // This page's version, the engine's: the sync refuses a page whose version is
 // not the engine's, so the header always says which one is published.
-const PAGE_VERSION = "1.2.101";
+const PAGE_VERSION = "1.2.106";
 // How this viewer wants the page drawn (CONFIGURE, VIEW), kept in their
 // browser, since each screen wants its own: the bridge's and the station's
 // sizes ("auto" or a fixed zoom, texts included), the dialogs' size, the
@@ -1509,7 +1509,7 @@ function browseItems() {
   if (browse.kind === "orders") {
     return [...orders].sort((a, c) => (c.createdAt || 0) - (a.createdAt || 0))
       .filter(o => !browse.filter || o.status === browse.filter)
-      .map(o => ({ o, text: [o.text, o.reason, o.note, o.deliveredTitle, o.agent, o.base, deptOf(o.folder).name, o.folder, o.proposedBy?.title, (OST[o.status] || {}).label, o.handoff?.number ? "#" + o.handoff.number : ""].join(" ") }));
+      .map(o => ({ o, text: [o.text, o.reason, o.note, o.deliveredTitle, o.agent, o.base, deptOf(o.folder).name, o.folder, o.proposedBy?.title, orderMeta(o).label, o.handoff?.number ? "#" + o.handoff.number : ""].join(" ") }));
   }
   const byFolder = handoffs.byFolder || {};
   return folderList().filter(f => !f.startsWith("#") && showsIssues(f) && (!browse.filter || f === browse.filter))
@@ -1558,8 +1558,13 @@ function stateFilter() {
   return el("select", { id: "browse-state", "aria-label": tr("State"), onchange: e => { browse.state = e.target.value; browse.page = 0; renderBrowse(); } },
     [["", tr("Every state")], ["todo", tr("To Do only")], ["doing", tr("Doing only")]].map(([v, label]) => { const o = el("option", { value: v, text: label }); if (v === browse.state) o.selected = true; return o; }));
 }
+// A delivered order whose session ended the turn it started (finishedAt, set by the dispatcher).
+function orderMeta(o) {
+  if (o.status === "delivered" && o.finishedAt) return { label: tr("Finished"), color: "#4fb07a" };
+  return OST[o.status] || { label: o.status, color: "#c9cfd9" };
+}
 function orderRow(o, now, onOpen) {
-  const meta = OST[o.status] || { label: o.status, color: "#c9cfd9" };
+  const meta = orderMeta(o);
   const to = `${deptOf(o.folder).name} · ${o.deliveredTitle || tr(({ any: "a free one", existing: "free only", new: "new session" })[o.mode] || "") || ""}`;
   return el("div", { class: "order-row clickable", role: "button", tabindex: "0", title: tr("See the whole order"), onclick: onOpen || (() => openOrderDetail(o.id)) },
     el("span", { class: "dotlbl", style: { color: meta.color } }, el("i", { style: { background: meta.color } }), meta.label),
@@ -2958,10 +2963,14 @@ const when = ms => ms ? new Date(ms).toLocaleString(locale(), { day: "2-digit", 
 // changes it, and nothing has been delivered yet.
 // A proposed order opens ready to edit, since that is what it is opened for;
 // any other order only to read.
+// The coordination session marks the orders it decided: from its chat
+// (review_orders) or from its orders pane.
+const VIA_LABELS = { chat: "from the chat of the coordination session", panel: "from the orders pane of the coordination session" };
+const decidedVia = (time, via) => time && VIA_LABELS[via] ? `${time} · ${tr(VIA_LABELS[via])}` : time;
 function openOrderDetail(id) {
   const o = orders.find(x => x.id === id); if (!o) return;
   const isEditing = o.status === "proposed";
-  const meta = OST[o.status] || { label: o.status, color: "#c9cfd9" };
+  const meta = orderMeta(o);
   const rows = [
     [tr("State"), el("span", { class: "dotlbl", style: { color: meta.color } }, el("i", { style: { background: meta.color } }), meta.label)],
     ["To", deptOf(o.folder).name + (o.agent ? ` · ${tr("agent")} ${o.agent}` : "")],
@@ -2974,7 +2983,9 @@ function openOrderDetail(id) {
     ["Delivered to", o.deliveredTitle || null],
     ["Handoff", o.handoff?.number ? `#${o.handoff.number}` : null],
     ["Resent", o.attempt > 1 ? tr(o.attempt === 2 ? "Once, on {when}" : "{n} times, the last on {when}", { n: o.attempt - 1, when: when(o.resentAt) || "?" }) : null],
-    ["Created", when(o.createdAt)], ["Edited", when(o.editedAt)], ["Approved", when(o.approvedAt)], ["Picked up", when(o.claimedAt)], ["Delivered", when(o.deliveredAt)],
+    ["Created", when(o.createdAt)], ["Edited", when(o.editedAt)], ["Approved", decidedVia(when(o.approvedAt), o.approvedVia)], ["Picked up", when(o.claimedAt)], ["Delivered", when(o.deliveredAt)],
+    ["Finished", o.status === "delivered" && when(o.finishedAt) ? `${when(o.finishedAt)} · ${tr("the session ended the turn the order started")}` : null],
+    ["Rejected", o.status === "rejected" && o.rejectedVia === "chat" ? tr("From the chat of the coordination session") : o.status === "rejected" && o.rejectedVia === "panel" ? tr("From the orders pane of the coordination session") : null],
     ["Note", o.note || null],
   ].filter(([, v]) => v);
   const canDiscard = ["pending", "needs_click", "failed"].includes(o.status);
@@ -3108,7 +3119,7 @@ async function resendOrder(id, dest, target) {
   try {
     await db.doc(`orders/${id}`).update({
       status: "pending", attempt: (Number(o.attempt) || 1) + 1, resentAt: now, updatedAt: now,
-      deliveredTo: null, deliveredTitle: null, deliveredAt: null, spawnedAt: null, awaitsOpen: null, openLink: null, openText: null, claimedBy: null, claimedAt: null, note: null,
+      deliveredTo: null, deliveredTitle: null, deliveredAt: null, finishedAt: null, spawnedAt: null, awaitsOpen: null, openLink: null, openText: null, claimedBy: null, claimedAt: null, note: null,
       // A branch taken from the repo is read again; one the order named stays.
       ...(o.baseIsDefault ? { base: null, baseCommit: null, baseIsDefault: null } : {}),
       // Another destination drops the session the order was meant for.
@@ -4471,6 +4482,12 @@ const ES = {
   "Edited": "Editada",
   "Approved": "Aprobada",
   "Picked up": "Recogida",
+  "from the chat of the coordination session": "desde el chat de la sesión de coordinación",
+  "Finished": "Terminada",
+  "the session ended the turn the order started": "la sesión terminó el turno que empezó con la orden",
+  "From the chat of the coordination session": "Desde el chat de la sesión de coordinación",
+  "from the orders pane of the coordination session": "desde el panel de órdenes de la sesión de coordinación",
+  "From the orders pane of the coordination session": "Desde el panel de órdenes de la sesión de coordinación",
   "Note": "Nota",
   "The session that asked for it (\"{title}\")": "La sesión que lo pidió («{title}»)",
   "; if it is gone, a free one or a new one": "; si ya no está, una libre o una nueva",

@@ -281,6 +281,11 @@ owner, and the sessions running under that same account, can read or write a sta
 | A coordination session | Everything | Orders and `config/departments` of its own station, and republishing its own station page, asking the user each time |
 | The dispatcher (inside a coordination session) | Orders and sessions | Order status, `config/agents`, `config/handoffs`, `config/models` and its lease in `dispatchers`; it also closes the session documents of sessions the app no longer has, deletes closed ones after 7 days and finished orders after 30 |
 
+A session's document is named by the desktop app's id for it (`local_…`), the one the app's
+session tools take. It also carries Claude Code's own id for the session (`engineSessionId`, the
+name of its transcript), which is what Claude Code's own messaging between sessions addresses; the
+station does not use it yet.
+
 A session belongs to the first station in `stations` whose `repos` include the origin remote of
 its repo, read with git when the session starts. While an earlier station in the list has not
 answered, the session waits for it instead of landing on a later one. A station that does not
@@ -424,6 +429,19 @@ gets no orders. A session that is still open comes back by itself: its next repo
 document again, with its own state and no reason, and one whose document was deleted meanwhile
 writes it anew.
 
+A delivered order shows as *Finished* once the session that got it ends a turn the order started.
+Each session reports when its current turn began (`turnStartedAt`), and every coordination session,
+once a minute and whether or not it holds the lease, writes `finishedAt` on a delivered order whose
+session, one of its own machine's, is idle after such a turn: the first turn of a session the order opened, or a turn that began after
+the delivery in an open one, so an order that arrived while the session was busy waits for its own
+turn. Work that turn left running in the background (a long command, say) ends in a turn of its own,
+which the task's notice starts: each session also reports what started its current turn
+(`turnOrigin`), and when that is a background task's notice, the dispatcher moves `finishedAt` to
+the end of that turn, for the latest order the session got. A turn the user or another session
+starts is other work and leaves it where it is. Finished means the turn
+ended, not that the work is complete: the session may have stopped to ask you something. A
+session that closes without ending that turn leaves the order delivered.
+
 An order that is waiting for your click, failed or was delivered can be resent from its detail on
 the page, as it is or with another destination. It goes back to the queue with its attempt number
 raised and the trace of its last delivery cleared (a branch taken from the checkout is read again;
@@ -448,6 +466,40 @@ session that asked has already ended when the reply is proposed, the order goes 
 by its mode and keeps whom it answered (`replyGone`); the agent is told, so its text can explain
 itself to whoever gets it. The page shows the session a proposal goes back to, or that it answers
 one that no longer exists, before you approve it.
+
+Proposed orders can also be decided from the coordination session's chat, also by Remote Control:
+ask it to show, approve or reject them, and its `review_orders` tool lists them (id, room, who
+asks, the reason and the beginning of the text) or decides the ones you name, or all of them. It
+asks you to confirm the whole list in one question first, with each order's whole text, so an order
+whose text asks for its own approval decides nothing and nothing is approved unread; more than 15
+orders, or texts too long for one question, are refused, to be decided in fewer at a time or in the
+pane or the page. It decides nothing on a turn that another session, a schedule or a notification
+started. It writes what the page writes, plus `approvedVia: "chat"` or
+`rejectedVia: "chat"`, which the order's detail shows, and each write carries the version it read:
+an order edited, approved or rejected in the page while you were asked is left as it is, and the
+tool says so.
+
+The coordination session in the desktop app also opens an orders pane beside its chat (`/orders`,
+or `/ordenes` in Spanish, opens it again once closed). It lists the proposed orders, each with the
+room, who asks, the reason and its whole text, and an Approve and a Reject button. A
+press is your own click, so it asks nothing more: it writes what the page writes, with
+`approvedVia: "panel"` or `rejectedVia: "panel"`, and the version the pane read, so an order changed
+in the page meanwhile is left as it is and the pane says so. The pane reads the proposed orders
+again on each round of the dispatcher's loop (every 30 seconds, also in a coordination session that
+does not hold the lease) and after each press or each decision made with `review_orders`. It exists
+only while the coordination session is open in the desktop app; from the phone, `review_orders` by
+Remote Control or the page do the same.
+
+While orders wait, a band above the coordination session's prompt says how many, with a button
+that opens the pane; it shows in the desktop app, on the phone and in the terminal, also with the
+pane closed, and only in the coordination session.
+
+The session that proposes an order sees under its `propose_order` call where that order stands:
+waiting for approval, approved and being delivered, waiting for a session of the room to open,
+delivered (to which session), done once that session ended the turn the order started, rejected,
+not delivered, or no longer in the station. The session reads its open proposals again once a
+minute, one read per order, and stops when none can change any more, or a day after it proposed
+them; it picks them up again after a reload of the plugin.
 
 The message a session receives says how to answer. An order another room proposed names that room
 (or says it comes from another session of the same room) and the session that asked, and says to return the result with `propose_order` to that room, which
@@ -599,6 +651,28 @@ What each session reads first:
 
 Each session reports to the station the branch it is on (`branch`) and whether it runs in one of
 the app's worktrees (`inWorktree`), which is how the dispatcher tells these cases apart.
+
+## The station's look in the app
+
+`/station-look` (`/aspecto` in Spanish) gives the Claude app a look of the station in the sessions
+of its rooms on that computer: its colours and a scene behind the conversation. With nothing after
+it, it turns the default look on, or off when one is on; `/station-look <look>` chooses a look by
+its name, in either language, and `/station-look off` (`/aspecto quitar`) turns it off. A name it
+does not know gets the list of looks. It is off until you turn it on. The choice is kept for the
+next sessions of that computer; sessions already open take it after `/reload-plugins`, and keep it
+until they end when you turn it off. The desktop and mobile apps draw it, never the terminal, and
+an app session holds one theme: another plugin's theme set later replaces it, and turning the
+station's look off clears whatever theme the session has.
+
+The engine has one look, Space, the default: deep-space blues in dark mode and pale steel in light
+mode, over a starfield with a planet in a corner, under frosted panels. A station adds its own in
+`plugin/hooks/station-looks.ts` of its copy of the plugin, which lists them (`STATION_LOOKS`); each
+look has a name (the same as the page theme it goes with), an English label and its Spanish, the
+theme the app takes (`colors` and, for a scene, a `backdrop` naming the look) and the scene's SVG.
+The colours are a design-system palette of about a hundred names, so they are generated with the
+design system's `makeColors` rather than written by hand; `plugin/hooks/look.ts` says how Space's
+were made. That file belongs to the station's copy: the engine's own is an empty list, and
+updating the copy's engine keeps the station's.
 
 ## What a change reaches
 
