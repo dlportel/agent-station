@@ -62,7 +62,7 @@ Three pieces, and none of them names a station, a company or a repo:
 
 | Piece | What it does |
 |---|---|
-| The page, `page/office.html` | The station. You publish it as a claude.ai artifact with a database; the configuration lives in that database. Its scenery comes from a theme, `page/themes/space.js` by default, published next to it. |
+| The page, `page/office.html` | The station. You publish it as a claude.ai artifact with a database; the configuration lives in that database. Its code and styles, `page/station.js` and `page/station.css`, are published next to it, and so is its scenery, a theme: `page/themes/space.js` by default. |
 | The plugin, `plugin/` | Installed in Claude Code. In each session of a station's repos it writes that session's state to the station, gives the agent the station's map and the `propose_order` tool, and guards the station against agents writing to it. |
 | The coordination session | Any session opened in the repo you name as coordination. It runs the dispatcher, which delivers the approved orders on its machine and keeps the station's catalogs (subagents, open issues, models) up to date. |
 
@@ -149,9 +149,9 @@ repos, so it cannot be the coordination.
    process after a while without activity, the coordination session's included, and with it the
    dispatcher; the header then shows NO DISPATCHER as soon as an approved order waits. To avoid
    it, turn on KEEP AWAKE in CONFIGURE: the coordination session keeps a command running in the
-   background, which costs no tokens, so the app leaves it running. While it runs, the app may count
-   the session as busy, and then its setting to keep the computer awake while Claude works keeps
-   the computer from going to sleep on its own.
+   background, which costs no tokens, so the app leaves it running. It does not keep the computer
+   awake: while the computer sleeps the dispatcher sleeps too, so for orders to be delivered at
+   night, set the computer not to sleep while it is plugged in.
 
 5. **Open sessions in your other repos.** Each one appears as a robot in its room once it starts,
    and gets the station's map with its first message.
@@ -188,10 +188,12 @@ Each handoff shows its state, which is its label, one at most. `To Do` while nob
 new issue starts. `Doing` when someone or a session works on it: when its issue has that label (or
 a name teams give it, such as `in progress` or `wip`), when it is assigned to someone, or when the
 station gave an order for it that is on its way or delivered; its tooltip and its detail say which.
-Once its work is done the agent removes `Doing` and finishes it as the project's own instructions
+`On Hold` when it cannot be started now: it goes last in its room's list, does not count as being
+done, and its detail offers no ASSIGN TO AN AGENT. Agents learn to put a handoff `On Hold` with a
+comment that says why, and to put it back to `To Do` when it can go on. Once its work is done the agent removes `Doing` and finishes it as the project's own instructions
 say: with a label of the team's own (such as `Pending production`), which the station shows as one
 more label, or by closing the issue. The full list filters by state too. On GitHub the dispatcher
-creates `To Do` and `Doing` in a repo that lacks them, and never changes one that exists; GitLab
+creates `To Do`, `Doing` and `On Hold` in a repo that lacks them, and never changes one that exists; GitLab
 creates them when they are first used.
 ↻ UPDATE, in OPEN HANDOFFS and in the full list, asks the dispatcher to read them now instead of
 waiting for its fifteen minutes; it does within a minute, and the button's tooltip says when they
@@ -337,11 +339,17 @@ claude plugin test plugin
 
 Keep the version in `plugin/.claude-plugin/plugin.json` and `plugin/hooks/version.ts` equal; the
 station shows each session's version, so a session running an old copy stands out. After a change
-to the page or the space theme, republish the page to each station with `page/themes/space.js`
-as `themes/space.js`, passing the station's current title again: the page has no `<title>` of its
-own, so a publish without one renames the artifact.
+to the page or the space theme, republish the page to each station with `page/station.js`,
+`page/station.css` and `page/themes/space.js` as `station.js`, `station.css` and
+`themes/space.js`, passing the station's current title again: the page has no `<title>` of its
+own, so a publish without one renames the artifact. The page itself is small, so the session that
+republishes it only reads that; it replaces the other files after listing the artifact's files,
+without reading them. With several stations, publish those files once to an artifact of your own
+and republish each station copying them from it (the Artifact tool's `files` entry
+`{ "artifact": "<its URL>", "path": "station.js" }`), so they are copied on the server and no
+session reads them again.
 
-The [live demo](https://dlportel.github.io/agent-station/demo/) loads `page/office.html` and
+The [live demo](https://dlportel.github.io/agent-station/demo/) loads the page and
 its theme straight from this repo, so it shows every change to `main` on its own. Only
 `demo/data.js`, which stands in for the station's database, is separate: after changing how the
 page reads or writes its data, open the demo locally (serve the repo, for example with

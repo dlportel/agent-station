@@ -910,11 +910,16 @@ export const register: Register = (on, options) => {
     return (await io?.now?.().catch(() => undefined)) ?? Date.now()
   }
 
-  // The keeper's beat: the time its command last wrote, in a file of this
-  // session's under ~/.claude/agent-station-logs.
+  // The keeper's beat: the time its command last wrote, in a file of the
+  // station's under ~/.claude/agent-station-logs: one per station, since only
+  // the session holding the lease keeps a keeper, so no file is left behind
+  // each time a coordination session ends.
   async function keeperBeatPath(): Promise<string> {
     const home = await io?.userProfile().catch(() => undefined)
-    return home ? joinPath(home, '.claude', LOG_FOLDER, `keeper-${docId || 'unknown'}.beat`).replace(/\\/g, '/') : ''
+    // The path goes into a shell command: a key with anything but letters,
+    // digits, _ and - gets no beat, and so no keeper.
+    const key = artifactKey(officeUrl) ?? ''
+    return home && /^[a-z0-9_-]+$/.test(key) ? joinPath(home, '.claude', LOG_FOLDER, `keeper-${key}.beat`).replace(/\\/g, '/') : ''
   }
 
   async function isKeeperBeating(now: number): Promise<boolean> {

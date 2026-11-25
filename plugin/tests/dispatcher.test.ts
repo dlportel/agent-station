@@ -775,7 +775,7 @@ test('handoffs of a GitLab repo are read with glab, and a repo on another host g
   await clock.advance(5_000)
 
   const handoffs = db.read('config', 'handoffs')
-  expect(handoffs?.byFolder?.app?.[0]).toEqual({ number: 7, title: 'Add the delta endpoint', url: 'https://gitlab.com/acme/app/-/work_items/7', from: 'legal', labels: [], progressLabel: 'doing', assignees: ['ana'], createdAt: '2026-10-16T10:00:00Z', excerpt: `The app needs a delta endpoint. ${'x'.repeat(247)}…` })
+  expect(handoffs?.byFolder?.app?.[0]).toEqual({ number: 7, title: 'Add the delta endpoint', url: 'https://gitlab.com/acme/app/-/work_items/7', from: 'legal', labels: [], progressLabel: 'doing', holdLabel: '', assignees: ['ana'], createdAt: '2026-10-16T10:00:00Z', excerpt: `The app needs a delta endpoint. ${'x'.repeat(247)}…` })
   expect(handoffs?.views?.app).toBe('glab issue view <n> -R https://gitlab.com/acme/app')
   // The command that marks an issue in progress, for the orders that hand it to an agent.
   expect(handoffs?.marks?.app).toBe('glab issue update <n> -R https://gitlab.com/acme/app --label "Doing" --unlabel "To Do"')
@@ -1167,6 +1167,8 @@ test('a handoff keeps who it is assigned to and its state labels', { options }, 
         { number: 4, title: 'Doing it', url: 'u4', createdAt: 'x', labels: [{ name: 'bug' }, { name: 'In Progress' }], assignees: [{ login: 'amn' }] },
         { number: 5, title: 'Waiting', url: 'u5', createdAt: 'x', labels: [{ name: 'progress-report' }, { name: 'To Do' }], assignees: [] },
         { number: 6, title: 'Merged', url: 'u6', createdAt: 'x', labels: [{ name: 'Pending production' }], assignees: [{ login: 'amn' }] },
+        { number: 9, title: 'Held', url: 'u9', createdAt: 'x', labels: [{ name: 'On Hold' }, { name: 'Blocked' }, { name: 'Doing' }], assignees: [] },
+        { number: 10, title: 'Waiting outside', url: 'u10', createdAt: 'x', labels: [{ name: 'status: en espera' }], assignees: [] },
       ]) }
       : { exitCode: 0, stdout: '[]' }
   })
@@ -1176,7 +1178,7 @@ test('a handoff keeps who it is assigned to and its state labels', { options }, 
   await $.tool.call({ tool: 'Read', file_path: 'C:/x.md' } as any)
   await clock.advance(5_000)
 
-  const [doing, waiting, merged] = db.read('config', 'handoffs')?.byFolder?.app ?? []
+  const [doing, waiting, merged, held, heldEs] = db.read('config', 'handoffs')?.byFolder?.app ?? []
   expect(doing?.progressLabel).toBe('In Progress')
   expect(doing?.assignees).toEqual(['amn'])
   expect(db.read('config', 'handoffs')?.marks?.app).toBe('gh issue edit <n> --repo acme/app-repo --add-label "Doing" --remove-label "To Do"')
@@ -1185,11 +1187,17 @@ test('a handoff keeps who it is assigned to and its state labels', { options }, 
   // A label for what comes after is the project's own, and shows as one more label.
   expect(merged?.labels).toEqual(['Pending production'])
   expect(merged?.progressLabel).toBe('')
-  // Each repo lacked Doing: the dispatcher made it once, and left "to do" as it was.
-  expect(created).toEqual(['acme/app-repo: Doing 0E8A16', 'acme/legal: Doing 0E8A16'])
+  // On Hold wins over Doing; a label beside it that says why is one more label.
+  expect(held?.holdLabel).toBe('On Hold')
+  expect(held?.progressLabel).toBe('')
+  expect(held?.labels).toEqual(['Blocked'])
+  expect(heldEs?.holdLabel).toBe('status: en espera')
+  expect(heldEs?.labels).toEqual([])
+  // Each repo lacked Doing and On Hold: the dispatcher made them once, and left "to do" as it was.
+  expect(created).toEqual(['acme/app-repo: Doing 0E8A16', 'acme/app-repo: On Hold B60205', 'acme/legal: Doing 0E8A16', 'acme/legal: On Hold B60205'])
   await $.tool.call({ tool: 'Read', file_path: 'C:/y.md' } as any)
   await clock.advance(16 * 60_000)
-  expect(created.length).toBe(2)
+  expect(created.length).toBe(4)
   expect(waiting?.progressLabel).toBe('')
   expect(waiting?.assignees).toEqual([])
   expect(waiting?.labels).toEqual(['progress-report'])
@@ -1211,7 +1219,7 @@ test('a keeper that stopped beating is replaced, and one still beating is never 
   const starts = () => toolCalls.filter(c => c.tool === 'Bash')
   expect(starts().length).toBe(1)
   // The whole loop is in the command: nothing it runs can be rewritten after approval.
-  expect(String(starts()[0].command)).toContain('while :; do date +%s > "C:/Users/me/.claude/agent-station-logs/keeper-local_coord.beat"; sleep 60; done')
+  expect(String(starts()[0].command)).toContain('while :; do date +%s > "C:/Users/me/.claude/agent-station-logs/keeper-test-station.beat"; sleep 60; done')
   expect(String(starts()[0].command)).not.toContain('.sh')
 
   await clock.advance(10 * 60_000)

@@ -71,7 +71,7 @@ With fixed arguments, never through a shell:
 - `hostname`, to name the machine when the environment does not.
 - In the coordination session, `gh` and `glab`, when they are installed, to list each repo's open
   issues (`issue list`) and check that they have a login (`auth status`). On GitHub it also lists a
-  repo's labels and creates `To Do` and `Doing` when the repo lacks them (`label list`,
+  repo's labels and creates `To Do`, `Doing` and `On Hold` when the repo lacks them (`label list`,
   `label create`), once, and never changes a label that exists. It changes no issue.
 
 ### Files it reads and writes

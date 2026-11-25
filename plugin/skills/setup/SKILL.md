@@ -31,9 +31,9 @@ chosen as coordination later in CONFIGURE, at the cost of its room.)
   tag does not exist, clone without `--branch`.
 
 From here on, "the clone" is that folder. When it is not the working directory, the page cannot be
-published from where it is: copy `page/office.html` and `page/themes/space.js` from the clone into
-your scratchpad directory, keeping `themes/space.js` under a `themes` folder, and publish those
-copies.
+published from where it is: copy `page/office.html`, `page/station.js`, `page/station.css` and
+`page/themes/space.js` from the clone into your scratchpad directory, keeping `themes/space.js`
+under a `themes` folder, and publish those copies.
 
 - Find this plugin's id with `claude plugin list`: the entry named `agent-station`, for example
   `agent-station@agent-station`. If there is more than one `agent-station`, tell the user
@@ -50,8 +50,9 @@ Publish the clone's `page/office.html` (or its copy, see step 1) with the Artifa
 artifact:
 
 - `title`: the station's name; `icon`: `robot`;
-- `files`: `{ "themes/space.js": "page/themes/space.js" }`, plus `{ "theme.js": "<path>" }` only if
-  the user has a theme of their own;
+- `files`: `{ "station.js": "page/station.js", "station.css": "page/station.css",
+  "themes/space.js": "page/themes/space.js" }`, plus `{ "theme.js": "<path>" }` only if the user
+  has a theme of their own;
 - `capabilities`, exactly:
 
   ```json

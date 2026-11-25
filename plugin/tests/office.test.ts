@@ -1619,15 +1619,22 @@ test('the map tells a room that its handoffs are its repo\'s open issues, how to
   // What comes once the work is done is the project's own: the station only says to remove Doing.
   expect(app).toContain("When its work is done, remove `Doing` and finish it as your project's own instructions say")
   expect(app).not.toContain('Pending production')
-  expect(app).toContain('One with `Doing` or someone assigned is taken: do not start it.')
+  expect(app).toContain('One with `Doing`, `On Hold` or someone assigned is not free: do not start it.')
+  // How to put one On Hold, and to say why.
+  expect(app).toContain('put it `On Hold`, which removes `To Do` and `Doing`: `gh issue edit <n> --repo acme/app-repo --add-label "On Hold" --remove-label "To Do,Doing"`')
+  expect(app).toContain('`gh issue comment <n> --repo acme/app-repo --body "…"`')
+  expect(app).toContain('put it back to `To Do`: `gh issue edit <n> --repo acme/app-repo --add-label "To Do" --remove-label "On Hold"`')
   expect(app).toContain('`gh issue create --repo acme/app-repo --title "…" --body "…" --label "To Do"`')
   const shop = stationMap(station, 'shop', 'mcp__agent-station__propose_order')
   expect(shop).toContain('`glab issue list -R https://gitlab.com/group/shop`')
+  expect(shop).toContain('`glab issue update <n> -R https://gitlab.com/group/shop --label "On Hold" --unlabel "To Do,Doing"`')
+  expect(shop).toContain('`glab issue note <n> -R https://gitlab.com/group/shop -m "…"`')
   expect(stationMap(station, 'quiet', 'mcp__agent-station__propose_order')).not.toContain("Your room's handoffs")
   expect(stationMap(station, 'coord', 'mcp__agent-station__propose_order')).not.toContain("Your room's handoffs")
   const es = stationMap(stationFromConfig({ language: 'es', repos: [{ remote: 'github.com/acme/app-repo', folder: 'app' }], departments: {} }, OFFICE), 'app', 'mcp__agent-station__propose_order')
   expect(es).toContain('Los encargos de tu sala son las issues abiertas de su repo, `github.com/acme/app-repo`')
   expect(es).toContain('márcalo `Doing` (`<n>` es su número)')
+  expect(es).toContain('ponlo `On Hold`, lo que quita `To Do` y `Doing`')
 })
 
 test('a subagent finishing its turn leaves the session working; the session finishing leaves it idle', { options }, async ($, on) => {

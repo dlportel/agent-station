@@ -26,7 +26,8 @@ built from the data the page already has, so it needs no extra reads. On the bri
 shows the five newest of each room and a link to the rest.
 
 A handoff's state while it is open is one label at most, the same in every station: `To Do` while
-nobody is on it, as a new issue starts, and `Doing` while someone or a session works on it. What
+nobody is on it, as a new issue starts, `Doing` while someone or a session works on it, and
+`On Hold` while it cannot be started. What
 comes once its work is done belongs to each project's own instructions, not to the station: a label
 of the team's own for work that waits to reach production (such as `Pending production`), which the
 page shows as one more of the handoff's labels, or closing the issue. The page shows a handoff as
@@ -34,12 +35,15 @@ DOING when any of these holds: an order of the station made from it (`handoff.nu
 pending, waiting for its click, being picked up or delivered; its issue has `Doing`, or a name
 teams give it (`in progress`, `wip`, `working`, `en curso`, `en progreso`, with or without a
 `status:` prefix), which the dispatcher keeps as `progressLabel`; or its issue is assigned to
-someone (`assignees`, up to three). Otherwise it is TO DO. The chip on each row and the handoff's
+someone (`assignees`, up to three). Otherwise it is TO DO. Before all of these, the page shows a
+handoff as ON HOLD when its issue has `On Hold` (or `on-hold`, `en espera`, with or without a
+`status:` prefix), which the dispatcher keeps as `holdLabel`: it wins over every sign of DOING, goes
+last in its room's list, is not counted as being done, and its detail offers no ASSIGN TO AN AGENT. The chip on each row and the handoff's
 detail say which signs it has, each room's heading and its board count the ones being done, and the
-full list filters by state. `To Do` and `Doing` are left out of the labels a handoff shows. A label that says a handoff is urgent (`urgent`, `urgente`, `critical`, `crítico`, `blocker` or `p0`, with or without a `priority:` prefix) is drawn in red, its handoffs go first in their room's list on the bridge, and the room's board counts them.
+full list filters by state. `To Do`, `Doing` and `On Hold` are left out of the labels a handoff shows. A label that says a handoff is urgent (`urgent`, `urgente`, `critical`, `crítico`, `blocker` or `p0`, with or without a `priority:` prefix) is drawn in red, its handoffs go first in their room's list on the bridge, and the room's board counts them.
 
-On GitHub, an issue takes only labels its repo has, so the dispatcher creates `To Do` and `Doing`
-in each repo that lacks them, once, and never changes one that exists.
+On GitHub, an issue takes only labels its repo has, so the dispatcher creates `To Do`, `Doing`
+and `On Hold` in each repo that lacks them, once, and never changes one that exists.
 GitLab creates a label the first time it is added to an issue.
 
 A handoff also shows its issue's own labels (`labels`, up to eight), such as the area or the
@@ -566,7 +570,7 @@ that KEEP AWAKE does not work on that machine and why.
 
 - **What runs.** A Bash command started by the plugin itself, in the background, that never ends
   and writes the time to a file every minute, its beat
-  (`~/.claude/agent-station-logs/keeper-<session>.beat`). The whole loop is written in the command,
+  (`~/.claude/agent-station-logs/keeper-<station>.beat`, one per station). The whole loop is written in the command,
   never in a script it runs, so what is approved is all that runs. In auto mode the classifier
   refuses it, and no permission rule should let it through: KEEP AWAKE needs the coordination
   session with permissions bypassed. It costs no tokens, and since it never
@@ -586,11 +590,12 @@ that KEEP AWAKE does not work on that machine and why.
   survives a reload of the plugin, so an update or `/reload-plugins` never starts a second one; the
   state ends with the session's process, as the command does. At the end of each turn the app lists
   the session's background work, and the plugin keeps one command and stops any other.
-- **What it costs.** The app may count the session as busy while the command runs, and then its
-  setting to keep the computer awake while Claude works keeps the computer from going to sleep on
-  its own while the coordination session is open. A computer that sleeps anyway, or a closed app,
-  stops the dispatcher as before. A session that loses the dispatcher lease to another one stops
-  its command.
+- **What it does not do.** It keeps the app from stopping the session's process, not the computer
+  from sleeping: the app's setting to keep the computer awake while Claude works does not count
+  the command as work. A computer that sleeps, by its power settings or by hand, freezes the
+  dispatcher until it wakes, and a closed app stops it; for orders to be delivered at night, the
+  computer must be set not to sleep while it is plugged in. A session that loses the dispatcher
+  lease to another one stops its command.
 - **When it cannot start** (the Bash tool is missing or the call is refused), the coordination
   session says so once in a notice, with what to do when auto mode refused it, and its status line
   says so until the command runs. The plugin logs it in `~/.claude/agent-station-logs/<session>.log`,
@@ -688,8 +693,9 @@ What `/agent-station:setup` does, step by step, for doing it by hand or when the
 available:
 
 1. **Publish the station.** In a Claude Code session, ask Claude to publish `page/office.html` from
-   this repo as a new artifact, titled with your station's name, with `page/themes/space.js` as the
-   supporting file `themes/space.js`, and with the `db` capability and owner-only rules:
+   this repo as a new artifact, titled with your station's name, with the supporting files
+   `station.js`, `station.css` and `themes/space.js` (from `page/station.js`, `page/station.css`
+   and `page/themes/space.js`), and with the `db` capability and owner-only rules:
 
    ```json
    { "db": { "rules": [

@@ -2,11 +2,13 @@
 
 ## What is where
 
-- `page/office.html` is the whole station page: one self-contained file, published as a claude.ai
-  artifact. `page/themes/space.js` is its default theme and the reference for writing one.
+- `page/` is the station page, published as a claude.ai artifact: `office.html` is its markup,
+  `station.js` its code and `station.css` its styles, published next to it so that republishing a
+  station never needs the whole page read. `page/themes/space.js` is its default theme and the
+  reference for writing one.
 - `plugin/` is the `agent-station` Claude Code plugin: its hooks module (`hooks/register.ts` and
   the files it imports), its tests (`tests/`) and the guided setup skill (`skills/setup/`).
-- `demo/` is the live demo on GitHub Pages: it loads `page/office.html` from this repo, with
+- `demo/` is the live demo on GitHub Pages: it loads the page from this repo, with
   `demo/data.js` standing in for the station's database.
 - `docs/reference.md` explains the station in detail; the README covers installing and using it.
 
@@ -29,7 +31,7 @@ The version lives in two places that must stay equal: `plugin/.claude-plugin/plu
   new way, update `demo/data.js` so the demo keeps working.
 - Every place that sends an order (giving one, from the form, a robot's card or a handoff; editing a
   proposal; resending) offers the same destinations with the same picker: `DESTINATIONS` and
-  `destinationChoices` in `page/office.html`. A new place uses them; none keeps its own list.
+  `destinationChoices` in `page/station.js`. A new place uses them; none keeps its own list.
 - Prefer the simplest change that works. A fix that adds state, waits or special cases for a
   rare problem is usually not worth it. No new dependencies without asking.
 
@@ -37,7 +39,7 @@ The version lives in two places that must stay equal: `plugin/.claude-plugin/plu
 
 - Code, identifiers, comments, tests, commit messages and docs are in English.
 - Text the station shows in Spanish lives only in its dictionaries, keyed by the English text:
-  the `ES` table in `page/office.html` and `plugin/hooks/locale-es.ts`.
+  the `ES` table in `page/station.js` and `plugin/hooks/locale-es.ts`.
 - Docs describe how the station works now, not how it changed; the history belongs in commit
   messages.
 - Nothing in this repo names a company, a client, a person's private data or a private URL.

@@ -285,8 +285,9 @@ function ownHandoffLines(station: Station, ownFolder: string): string[] {
   return [
     '',
     say('Your room\'s handoffs are the open issues of its repo, `{repo}`: when the user speaks of handoffs, pending handoffs or the station\'s tasks, those issues are what they mean. To see them: `{list}`.', { repo: remote, list: issueCommand(repo.kind, repo.host, repo.path, 'list') }),
-    say('A handoff\'s state is its label, one at most: `To Do` (waiting, as a new issue starts) or `Doing` (someone or a session works on it). One with `Doing` or someone assigned is taken: do not start it. Before you start one that no station order gave you, mark it `Doing` (`<n>` is its number): `{mark}`.', { mark: issueCommand(repo.kind, repo.host, repo.path, 'progress') }),
+    say('A handoff\'s state is its label, one at most: `To Do` (waiting, as a new issue starts), `Doing` (someone or a session works on it) or `On Hold` (it cannot be started now). One with `Doing`, `On Hold` or someone assigned is not free: do not start it. Before you start one that no station order gave you, mark it `Doing` (`<n>` is its number): `{mark}`.', { mark: issueCommand(repo.kind, repo.host, repo.path, 'progress') }),
     say("When its work is done, remove `Doing` and finish it as your project's own instructions say: with a label of their own for work that waits to reach production, or by closing the issue with the commit or the pull or merge request that solves it."),
+    say('If a handoff cannot go on (it waits for a decision, for another handoff or for someone outside the team), put it `On Hold`, which removes `To Do` and `Doing`: `{hold}`. Then comment on it why: `{comment}`. When it can go on again, put it back to `To Do`: `{release}`.', { release: issueCommand(repo.kind, repo.host, repo.path, 'release'), hold: issueCommand(repo.kind, repo.host, repo.path, 'hold'), comment: issueCommand(repo.kind, repo.host, repo.path, 'comment') }),
   ]
 }
 
@@ -395,24 +396,29 @@ export function issueRepoOf(remote: string): { host: string; path: string; kind?
 }
 
 // A handoff's state while it is open, the same in every station: To Do (no
-// one on it, as a new issue starts) or Doing (someone or a session works on
-// it). What comes once its work is done (a label of the team's own, or
-// closing it) is for each project's own instructions, not the station's.
-export const STATE_LABELS = { todo: 'To Do', doing: 'Doing' } as const
+// one on it, as a new issue starts), Doing (someone or a session works on it)
+// or On Hold (it cannot be started now). What comes once its work is done (a
+// label of the team's own, or closing it) is for each project's own
+// instructions, not the station's.
+export const STATE_LABELS = { todo: 'To Do', doing: 'Doing', hold: 'On Hold' } as const
 
 // The command that opens or reads a handoff issue in a repo, for the map and
 // the page. glab takes the repo as a full URL, which also works for a GitLab
-// of its own. progress moves an issue from To Do to Doing. GitLab creates a
+// of its own. progress moves an issue from To Do to Doing, hold puts it
+// On Hold from either, and release puts a held one back to To Do. GitLab creates a
 // label the first time it is added; on GitHub the dispatcher creates the ones
 // a repo lacks.
-export function issueCommand(kind: IssueKind, host: string, path: string, verb: 'create' | 'view' | 'list' | 'progress'): string {
-  const { todo, doing } = STATE_LABELS
+export function issueCommand(kind: IssueKind, host: string, path: string, verb: 'create' | 'view' | 'list' | 'progress' | 'hold' | 'release' | 'comment'): string {
+  const { todo, doing, hold } = STATE_LABELS
   if (kind === 'github') {
     return {
       create: `gh issue create --repo ${path} --title "…" --body "…" --label "${todo}"`,
       view: `gh issue view <n> --repo ${path}`,
       list: `gh issue list --repo ${path}`,
       progress: `gh issue edit <n> --repo ${path} --add-label "${doing}" --remove-label "${todo}"`,
+      hold: `gh issue edit <n> --repo ${path} --add-label "${hold}" --remove-label "${todo},${doing}"`,
+      release: `gh issue edit <n> --repo ${path} --add-label "${todo}" --remove-label "${hold}"`,
+      comment: `gh issue comment <n> --repo ${path} --body "…"`,
     }[verb]
   }
   const repo = `https://${host}/${path}`
@@ -421,6 +427,9 @@ export function issueCommand(kind: IssueKind, host: string, path: string, verb: 
     view: `glab issue view <n> -R ${repo}`,
     list: `glab issue list -R ${repo}`,
     progress: `glab issue update <n> -R ${repo} --label "${doing}" --unlabel "${todo}"`,
+    hold: `glab issue update <n> -R ${repo} --label "${hold}" --unlabel "${todo},${doing}"`,
+    release: `glab issue update <n> -R ${repo} --label "${todo}" --unlabel "${hold}"`,
+    comment: `glab issue note <n> -R ${repo} -m "…"`,
   }[verb]
 }
 
