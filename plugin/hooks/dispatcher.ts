@@ -430,14 +430,20 @@ function readFrontmatter(text: string): Record<string, string> {
 const hostProblems = new Map<string, string | null>()
 // The newest open issues read from each repo.
 const ISSUES_PER_REPO = 100
-// The state labels of a handoff (STATE_LABELS): To Do and Doing. Doing is
-// also read under the names teams often give it, so an issue marked before the
-// station used Doing still counts as taken.
+// The state labels of a handoff (STATE_LABELS): To Do, Doing and On Hold.
+// Doing and On Hold are also read under the names teams often give them, so an
+// issue marked before the station used them still counts as taken or held.
 const TODO_LABEL = /^(status[:/ ]*)?to[ _-]?do$/i
 const IN_PROGRESS_LABEL = /^(status[:/ ]*)?(in[ _-]?progress|doing|wip|working|en[ _-]?curso|en[ _-]?progreso)$/i
-const isStateLabel = (name: string) => TODO_LABEL.test(name) || IN_PROGRESS_LABEL.test(name)
+const ON_HOLD_LABEL = /^(status[:/ ]*)?(on[ _-]?hold|en[ _-]?espera)$/i
+const isStateLabel = (name: string) => TODO_LABEL.test(name) || IN_PROGRESS_LABEL.test(name) || ON_HOLD_LABEL.test(name)
+// Why a handoff is On Hold, as teams name it beside that label.
+const HOLD_REASON_LABEL = /^(pending[ _-]?decision|blocked|waiting[ _-]?(external|on[ _-].+|for[ _-].+)|future|later)$/i
+// How far the work of a Doing handoff got, a label of the team's own beside
+// Doing: one that starts with Pending, such as Pending production.
+const STEP_LABEL = /^pending[ _-]+\S/i
 // The colours the dispatcher gives the state labels it creates on GitHub.
-const STATE_LABEL_COLORS: Record<string, string> = { [STATE_LABELS.todo]: 'D4C5F9', [STATE_LABELS.doing]: '0E8A16' }
+const STATE_LABEL_COLORS: Record<string, string> = { [STATE_LABELS.todo]: 'D4C5F9', [STATE_LABELS.doing]: '0E8A16', [STATE_LABELS.hold]: 'B60205' }
 // A GitHub repo lacking a state label cannot take the agents' commands, which
 // only add and remove them: the dispatcher creates the missing ones once per
 // repo, and never touches one that exists. Two scans at once
@@ -584,15 +590,25 @@ async function syncHandoffs(context: DispatcherContext) {
       if (issues.length) byFolder[folder] = issues.map(i => {
         const number = Number(kind === 'github' ? i.number : i.iid)
         const labels: string[] = (i.labels ?? []).map((l: any) => String(typeof l === 'string' ? l : l?.name))
+        // On Hold wins over Doing: a held handoff is not being worked on.
+        const holdLabel = labels.find(n => ON_HOLD_LABEL.test(n)) ?? ''
+        const holdReason = holdLabel ? labels.find(n => HOLD_REASON_LABEL.test(n)) ?? '' : ''
+        const progressLabel = holdLabel ? '' : labels.find(n => IN_PROGRESS_LABEL.test(n)) ?? ''
+        const stepLabel = progressLabel ? labels.find(n => STEP_LABEL.test(n) && !HOLD_REASON_LABEL.test(n)) ?? '' : ''
+        const shown = (n: string) => n && n !== 'handoff' && !n.startsWith('from-') && !isStateLabel(n) && n !== holdReason && n !== stepLabel
         return {
           number,
           title: String(i.title ?? '').slice(0, 200),
           url: String((kind === 'github' ? i.url : i.web_url) ?? ''),
           from: labels.find(n => n.startsWith('from-'))?.slice(5) ?? '',
-          labels: labels.filter(n => n && n !== 'handoff' && !n.startsWith('from-') && !isStateLabel(n)).slice(0, HANDOFF_LABELS_MAX).map(n => n.slice(0, HANDOFF_LABEL_LEN)),
+          labels: labels.filter(shown).slice(0, HANDOFF_LABELS_MAX).map(n => n.slice(0, HANDOFF_LABEL_LEN)),
           // Signs that someone is on it: Doing (or a name teams give it), and
           // who it is assigned to. The page adds the station's own orders.
-          progressLabel: labels.find(n => IN_PROGRESS_LABEL.test(n)) ?? '',
+          progressLabel,
+          // The step a Doing handoff reached, and why an On Hold one waits.
+          stepLabel: stepLabel.slice(0, HANDOFF_LABEL_LEN),
+          holdLabel,
+          holdReason: holdReason.slice(0, HANDOFF_LABEL_LEN),
           assignees: (i.assignees ?? []).map((a: any) => String(typeof a === 'string' ? a : a?.login ?? a?.username ?? a?.name ?? '')).filter(Boolean).slice(0, 3),
           createdAt: String((kind === 'github' ? i.createdAt : i.created_at) ?? ''),
           excerpt: excerptOf(kind === 'github' ? i.body : i.description),

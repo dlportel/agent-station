@@ -25,21 +25,28 @@ proposed it, and over a handoff's number, title, description, room, who asked an
 built from the data the page already has, so it needs no extra reads. On the bridge, OPEN HANDOFFS
 shows the five newest of each room and a link to the rest.
 
-A handoff's state while it is open is one label at most, the same in every station: `To Do` while
-nobody is on it, as a new issue starts, and `Doing` while someone or a session works on it. What
-comes once its work is done belongs to each project's own instructions, not to the station: a label
-of the team's own for work that waits to reach production (such as `Pending production`), which the
-page shows as one more of the handoff's labels, or closing the issue. The page shows a handoff as
+A handoff's state while it is open is one of three labels, the same in every station: `To Do` while
+nobody is on it, as a new issue starts, `Doing` while someone or a session works on it, until the
+issue is closed, and `On Hold` while it cannot be started. What comes once its work is done belongs
+to each project's own instructions, not to the station: closing the issue, or keeping `Doing` beside
+a label of the team's own that names the step it waits for. The page shows a handoff as ON HOLD when
+its issue has `On Hold` (or `on-hold`, `en espera`, with or without a `status:` prefix), which the
+dispatcher keeps as `holdLabel`; it wins over every sign of DOING. Beside it the page shows why it
+waits, a label the dispatcher keeps as `holdReason` (`Pending decision`, `Blocked`, `Waiting external`
+or `waiting on …`/`waiting for …`, `Future` or `Later`). An ON HOLD handoff goes last in its room's
+list on the bridge and its detail has no ASSIGN TO AN AGENT. Otherwise the page shows a handoff as
 DOING when any of these holds: an order of the station made from it (`handoff.number` on the order) is
 pending, waiting for its click, being picked up or delivered; its issue has `Doing`, or a name
 teams give it (`in progress`, `wip`, `working`, `en curso`, `en progreso`, with or without a
 `status:` prefix), which the dispatcher keeps as `progressLabel`; or its issue is assigned to
-someone (`assignees`, up to three). Otherwise it is TO DO. The chip on each row and the handoff's
+someone (`assignees`, up to three). Otherwise it is TO DO. Beside DOING, a label that starts with
+`Pending` (such as `Pending verification` or `Pending production`), which the dispatcher keeps as
+`stepLabel` only when the issue has `Doing`, shows the step its work reached. The chip on each row and the handoff's
 detail say which signs it has, each room's heading and its board count the ones being done, and the
-full list filters by state. `To Do` and `Doing` are left out of the labels a handoff shows. A label that says a handoff is urgent (`urgent`, `urgente`, `critical`, `crítico`, `blocker` or `p0`, with or without a `priority:` prefix) is drawn in red, its handoffs go first in their room's list on the bridge, and the room's board counts them.
+full list filters by state. The state labels, `holdReason` and `stepLabel` are left out of the labels a handoff shows. A label that says a handoff is urgent (`urgent`, `urgente`, `critical`, `crítico`, `blocker` or `p0`, with or without a `priority:` prefix) is drawn in red, its handoffs go first in their room's list on the bridge, and the room's board counts them.
 
-On GitHub, an issue takes only labels its repo has, so the dispatcher creates `To Do` and `Doing`
-in each repo that lacks them, once, and never changes one that exists.
+On GitHub, an issue takes only labels its repo has, so the dispatcher creates `To Do`, `Doing` and
+`On Hold` in each repo that lacks them, once, and never changes one that exists.
 GitLab creates a label the first time it is added to an issue.
 
 A handoff also shows its issue's own labels (`labels`, up to eight), such as the area or the
@@ -249,10 +256,13 @@ asks for a particular one. A room's own subagents need no map: Claude Code loads
 
 It also tells the session what handoffs are for its own room: the open issues of its repo, so that
 "review the pending handoffs" means those issues, with the command that lists them on the repo's
-host; its states (`To Do`, and `Doing`, which with someone assigned means it is taken and not to
-be started); the command that marks one `Doing` and removes `To Do` before the agent starts it
-without a station order; and, once its work is done, to remove `Doing` and finish it as the
-project's own instructions say. Each room's command to open a handoff adds the label `To Do`. A room whose repo is
+host; its states (`To Do`; `Doing`, which with someone assigned means it is taken and not to be
+started, and which stays until the issue is closed; and `On Hold`, which is not to be started); the
+command that marks one `Doing` and removes `To Do` before the agent starts it without a station
+order; once its work is done, to finish it as the project's own instructions say, by closing it or
+by keeping `Doing` beside one label of the project that names the step it waits for; and how to put
+one `On Hold` (the command that adds it and removes `To Do` and `Doing`, and the one that comments
+on it, to say why and which handoffs block it) and back to `To Do` when it is free. Each room's command to open a handoff adds the label `To Do`. A room whose repo is
 on a host without issues, or whose issues the station does not show (ISSUES: NO), gets none of it.
 
 The map goes out again whenever the session loads its plugins anew (`/reload-plugins`, an update,
@@ -548,8 +558,8 @@ and asks for the work with an order meanwhile, never writing a token anywhere. A
 opened from the list on the bridge or the full list, has **ASSIGN TO AN AGENT**: it
 opens the order form for that department, filled in with the instruction to mark the issue
 `Doing` first (with its host's command, which the dispatcher keeps in `config/handoffs` as
-`marks`), read the issue with its host's command and handle it, and then remove `Doing` and
-finish it as the project's own instructions say; left unfinished, it goes back to `To Do`; the user picks the agent, the session and the model, and the order keeps the issue it
+`marks`), read the issue with its host's command and handle it, and then finish it as the
+project's own instructions say, by closing it or by keeping `Doing` beside the step it waits for; left unfinished, it goes back to `To Do`; the user picks the agent, the session and the model, and the order keeps the issue it
 came from (`handoff`).
 `/coordinator <message>` sends a note to the station's coordination session on the same machine.
 

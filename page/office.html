@@ -440,6 +440,8 @@ textarea { resize: vertical; min-height: 84px; }
 .hstate { font: 8px/1 var(--font-pixel); padding: 1px 5px; margin-right: 6px; border: 1px solid currentColor; white-space: nowrap; }
 .hstate.open { color: #ffcf6e; }
 .hstate.progress { color: var(--cyan); }
+.hstate.hold { color: #ff8a8a; }
+.hstate.step { color: var(--cyan); border-style: dashed; }
 .hlabel { font: 8px/1 var(--font-pixel); padding: 1px 4px; margin-right: 6px; color: #d9cfb8; background: rgba(255, 255, 255, .08); border: 1px solid #6e6450; white-space: nowrap; }
 .hlabel.urgent { color: #fff; background: #b3261e; border-color: #ff5a4e; }
 .board-urgent { font-size: 8px; color: #fff; background: #b3261e; padding: 1px 4px; }
@@ -1515,7 +1517,7 @@ function browseItems() {
   return folderList().filter(f => !f.startsWith("#") && showsIssues(f) && (!browse.filter || f === browse.filter))
     .flatMap(f => (byFolder[f] || []).map(i => ({ f, i, state: handoffState(f, i) })))
     .filter(x => !browse.state || browse.state === x.state)
-    .map(x => ({ ...x, text: ["#" + x.i.number, x.i.title, x.i.excerpt, x.i.from, deptOf(x.f).name, x.f, x.state === "doing" ? "Doing" : "To Do", ...(x.i.assignees || []), ...handoffLabels(x.i)].join(" ") }))
+    .map(x => ({ ...x, text: ["#" + x.i.number, x.i.title, x.i.excerpt, x.i.from, deptOf(x.f).name, x.f, STATE_NAMES[x.state], x.i.stepLabel, x.i.holdReason, ...(x.i.assignees || []), ...handoffLabels(x.i)].join(" ") }))
     .sort((a, c) => (Date.parse(c.i.createdAt) || 0) - (Date.parse(a.i.createdAt) || 0));
 }
 function renderBrowse() {
@@ -1556,7 +1558,7 @@ function renderBrowse() {
 }
 function stateFilter() {
   return el("select", { id: "browse-state", "aria-label": tr("State"), onchange: e => { browse.state = e.target.value; browse.page = 0; renderBrowse(); } },
-    [["", tr("Every state")], ["todo", tr("To Do only")], ["doing", tr("Doing only")]].map(([v, label]) => { const o = el("option", { value: v, text: label }); if (v === browse.state) o.selected = true; return o; }));
+    [["", tr("Every state")], ["todo", tr("To Do only")], ["doing", tr("Doing only")], ["hold", tr("On Hold only")]].map(([v, label]) => { const o = el("option", { value: v, text: label }); if (v === browse.state) o.selected = true; return o; }));
 }
 // A delivered order whose session ended the turn it started (finishedAt, set by the dispatcher).
 function orderMeta(o) {
@@ -1661,12 +1663,14 @@ async function askHandoffs() {
   }
 }
 
-// A handoff's state: Doing when the station gave an order for it that is on
-// its way or delivered, when its issue has Doing (or a name teams give it), or
-// when it is assigned to someone; else To Do. The reasons say why it is Doing.
-// What comes after (a label of the team's own, or closing it) is the
-// project's, and shows as one more of its labels.
-const handoffState = (folder, i) => handoffProgress(folder, i).length ? "doing" : "todo";
+// A handoff's state: On Hold when its issue has On Hold (or a name teams give
+// it), which nobody should take; else Doing when the station gave an order for
+// it that is on its way or delivered, when its issue has Doing (or a name teams
+// give it), or when it is assigned to someone; else To Do. The reasons say why
+// it is Doing. The step a Doing one reached (a label of the team's own that
+// starts with Pending) and why an On Hold one waits show beside its state.
+const STATE_NAMES = { todo: "To Do", doing: "Doing", hold: "On Hold" };
+const handoffState = (folder, i) => i.holdLabel ? "hold" : handoffProgress(folder, i).length ? "doing" : "todo";
 const ORDER_AT_WORK = ["pending", "needs_click", "claimed", "delivered"];
 function handoffProgress(folder, i) {
   const reasons = [];
@@ -1678,9 +1682,10 @@ function handoffProgress(folder, i) {
   return reasons;
 }
 function handoffStateChip(folder, i) {
-  return handoffState(folder, i) === "doing"
-    ? el("b", { class: "hstate progress", title: handoffProgress(folder, i).join(" · "), text: "DOING" })
-    : el("b", { class: "hstate open", text: "TO DO" });
+  const state = handoffState(folder, i);
+  if (state === "hold") return [el("b", { class: "hstate hold", title: tr("On Hold: it cannot be started now"), text: "ON HOLD" }), i.holdReason ? el("b", { class: "hstate hold", text: String(i.holdReason).toUpperCase() }) : null];
+  if (state === "doing") return [el("b", { class: "hstate progress", title: handoffProgress(folder, i).join(" · "), text: "DOING" }), i.stepLabel ? el("b", { class: "hstate step", text: String(i.stepLabel).toUpperCase() }) : null];
+  return el("b", { class: "hstate open", text: "TO DO" });
 }
 
 // The repo's own labels of a handoff (an area, a component), as the dispatcher kept them.
@@ -1689,7 +1694,9 @@ const handoffLabels = i => Array.isArray(i.labels) ? i.labels.filter(l => typeof
 // and its handoffs go first in their room's list on the bridge.
 const URGENT_LABEL = /^(priority[:/ ]*)?(urgent|urgente|critical|cr[ií]tico|blocker|p0)$/i;
 const isUrgentHandoff = i => handoffLabels(i).some(l => URGENT_LABEL.test(l));
-const urgentFirst = list => [...list].sort((a, c) => Number(isUrgentHandoff(c)) - Number(isUrgentHandoff(a)));
+// Urgent ones first, and held ones last, since nobody can take them.
+const handoffRank = i => (isUrgentHandoff(i) ? 0 : 1) + (i.holdLabel ? 2 : 0);
+const urgentFirst = list => [...list].sort((a, c) => handoffRank(a) - handoffRank(c));
 function handoffRow(folder, i, now, onOpen) {
   return el("div", { class: "todo-item clickable", role: "button", tabindex: "0", title: tr("See the handoff"), onclick: onOpen || (() => openHandoffDetail(folder, i)) },
     el("span", { class: "t" }, handoffStateChip(folder, i), ...handoffLabels(i).map(l => el("b", { class: URGENT_LABEL.test(l) ? "hlabel urgent" : "hlabel", text: l })), `#${i.number} ${i.title}`),
@@ -3190,14 +3197,17 @@ function sessionLink(id) {
 }
 function openHandoffDetail(folder, i) {
   const progress = handoffProgress(folder, i), state = handoffState(folder, i);
-  const rows = [["State", state === "doing" ? `Doing: ${progress.join(" · ")}` : tr("To Do: nobody on it yet")], ["Room", deptOf(folder).name], ["Asked by", i.from || null], ["Labels", handoffLabels(i).join(", ") || null], ["Opened", i.createdAt ? when(Date.parse(i.createdAt)) : null], ["Issue", `#${i.number}`]].filter(([, v]) => v);
+  const stateText = state === "hold" ? tr("On Hold: it cannot be started now") + (i.holdReason ? ` (${i.holdReason})` : "")
+    : state === "doing" ? `Doing: ${progress.join(" · ")}` + (i.stepLabel ? ` · ${i.stepLabel}` : "")
+    : tr("To Do: nobody on it yet");
+  const rows = [["State", stateText], ["Room", deptOf(folder).name], ["Asked by", i.from || null], ["Labels", handoffLabels(i).join(", ") || null], ["Opened", i.createdAt ? when(Date.parse(i.createdAt)) : null], ["Issue", `#${i.number}`]].filter(([, v]) => v);
   openInfo(el("div", { class: "card wide", role: "dialog", "aria-label": tr("Handoff") },
     el("div", { class: "card-head" }, el("span", { class: "box-title" }, tr("HANDOFF")), el("span", { style: { display: "flex", gap: "8px" } }, browseBackButton(), el("button", { class: "btn btn-ghost", type: "button", onclick: closeModal }, tr("CLOSE")))),
     el("div", { class: "detail-text", text: i.title || "" }),
     i.excerpt ? el("p", { class: "handoff-excerpt", text: i.excerpt }) : null,
     el("dl", { class: "facts" }, rows.flatMap(([k, v]) => [el("dt", { text: tr(k) }), el("dd", { text: v })])),
     el("div", { style: { display: "flex", flexWrap: "wrap", gap: "10px" } },
-      el("button", { class: "btn btn-cyan", type: "button", onclick: () => assignHandoff(folder, i) }, tr("ASSIGN TO AN AGENT")),
+      state === "hold" ? null : el("button", { class: "btn btn-cyan", type: "button", onclick: () => assignHandoff(folder, i) }, tr("ASSIGN TO AN AGENT")),
       typeof i.url === "string" && i.url.startsWith("https://") ? linkBtn(i.url, issueHostLabel(i.url), { marginLeft: "auto" }) : null)));
 }
 // The link to an issue, named after where it lives.
@@ -3234,7 +3244,7 @@ function assignHandoff(folder, i) {
       n: i.number, title: i.title || tr("untitled"), link,
       mark: isMarkCommand(handoffs.marks?.[folder]) ? String(handoffs.marks[folder]).replaceAll("<n>", String(i.number)) : tr("add the label \"Doing\" to the issue and remove \"To Do\""),
       view: isViewCommand(handoffs.views?.[folder]) ? String(handoffs.views[folder]).replace("<n>", String(Number(i.number))) : `gh issue view ${Number(i.number)}`,
-      finish: tr("When its work is done, remove Doing and finish it as this project's instructions say: with its own label for work that waits to reach production, or by closing it with the commit or the pull or merge request that solves it."),
+      finish: tr("When its work is done, finish it as this project's instructions say: by closing it with the commit or the pull or merge request that solves it or, while it waits for a later step, by keeping Doing beside one label of the project that names that step, such as Pending production."),
     }),
   };
   renderModal();
@@ -4259,8 +4269,10 @@ const ES = {
   "Every state": "Todos los estados",
   "To Do only": "Solo To Do",
   "Doing only": "Solo Doing",
+  "On Hold only": "Solo On Hold",
+  "On Hold: it cannot be started now": "On Hold: no se puede empezar ahora",
   "To Do: nobody on it yet": "To Do: nadie lo lleva todavía",
-  "When its work is done, remove Doing and finish it as this project's instructions say: with its own label for work that waits to reach production, or by closing it with the commit or the pull or merge request that solves it.": "Cuando su trabajo esté terminado, quita Doing y termínalo como digan las instrucciones de este proyecto: con su propia etiqueta para el trabajo que espera a llegar a producción, o cerrándolo con el commit o la pull o merge request que lo resuelve.",
+  "When its work is done, finish it as this project's instructions say: by closing it with the commit or the pull or merge request that solves it or, while it waits for a later step, by keeping Doing beside one label of the project that names that step, such as Pending production.": "Cuando su trabajo esté terminado, termínalo como digan las instrucciones de este proyecto: cerrándolo con el commit o la pull o merge request que lo resuelve o, mientras espera un paso posterior, dejando Doing junto a una etiqueta del proyecto que nombre ese paso, como Pending production.",
   "Take the handoff #{n} \"{title}\" of this repo{link}. Before anything else, mark it Doing: {mark}. Then read it with {view} and do what it asks. {finish} If you leave it unfinished, put it back to To Do and remove Doing. If anything is unclear, ask me before you start.": "Coge el encargo #{n} «{title}» de este repo{link}. Antes de nada, márcalo Doing: {mark}. Después léelo con {view} y haz lo que pide. {finish} Si lo dejas a medias, vuelve a ponerlo en To Do y quita Doing. Si algo no está claro, pregúntame antes de empezar.",
   "add the label \"Doing\" to the issue and remove \"To Do\"": "añade a la issue la etiqueta «Doing» y quita «To Do»",
   "OPEN": "ABIERTO",
@@ -4818,7 +4830,7 @@ async function start() {
     viewSessions(Date.now()).map(s => [s.sessionId, s.folder, s.vstate, s.tool || "", s.detail || "", s.title || "", s.model || "", s.waitKind || "", (s.drones || []).join("|"), s.endReason || ""]),
     orders.map(o => [o.id, o.status, o.folder, o.mode, o.proposedBy?.folder || "", o.approvedAt || 0, o.deliveredTo || "", o.handoff?.number || 0]),
     dispatchers.map(d => [d.machine, Date.now() - (d.heartbeatAt || 0) < LEASE_MS]),
-    Object.entries(handoffs.byFolder || {}).map(([f, list]) => [f, (Array.isArray(list) ? list : []).map(i => [i.number, i.progressLabel || "", (i.assignees || []).length, isUrgentHandoff(i)])]),
+    Object.entries(handoffs.byFolder || {}).map(([f, list]) => [f, (Array.isArray(list) ? list : []).map(i => [i.number, i.progressLabel || "", i.stepLabel || "", i.holdLabel || "", i.holdReason || "", (i.assignees || []).length, isUrgentHandoff(i)])]),
     agentsCatalog.scannedAt || 0, departmentsVersion,
   ]);
   // A robot that stays where it is still learns when its session last did

@@ -184,15 +184,19 @@ in CONFIGURE. When a room's issues cannot be read (no `gh` or `glab`, or no logi
 why and on which machine. The bridge lists the five newest of each room; SEE THEM ALL, or a room's
 board, opens every open handoff with a text search, a filter by room and pages of fifteen.
 The dispatcher reads the 100 newest open issues of each repo; a room that reaches that shows `100+`.
-Each handoff shows its state, which is its label, one at most. `To Do` while nobody is on it, as a
-new issue starts. `Doing` when someone or a session works on it: when its issue has that label (or
-a name teams give it, such as `in progress` or `wip`), when it is assigned to someone, or when the
-station gave an order for it that is on its way or delivered; its tooltip and its detail say which.
-Once its work is done the agent removes `Doing` and finishes it as the project's own instructions
-say: with a label of the team's own (such as `Pending production`), which the station shows as one
-more label, or by closing the issue. The full list filters by state too. On GitHub the dispatcher
-creates `To Do` and `Doing` in a repo that lacks them, and never changes one that exists; GitLab
-creates them when they are first used.
+Each handoff shows its state, which is one of three labels. `To Do` while nobody is on it, as a
+new issue starts. `Doing` when someone or a session works on it, until the issue is closed: when its
+issue has that label (or a name teams give it, such as `in progress` or `wip`), when it is assigned
+to someone, or when the station gave an order for it that is on its way or delivered; its tooltip and
+its detail say which. Beside `Doing`, a label of the team's own that starts with `Pending` (such as
+`Pending production`) shows as the step its work reached. `On Hold` when it cannot be started now:
+the station shows it as not available, last in its room's list, with the label that says why if it
+has one (such as `Blocked` or `Pending decision`), and offers no ASSIGN TO AN AGENT for it. Agents
+learn to put a handoff `On Hold` with a comment that says why, and to put it back to `To Do` when it
+is free. Once its work is done the agent finishes it as the project's own instructions say: by
+closing the issue, or by keeping `Doing` beside the step it waits for. The full list filters by state
+too. On GitHub the dispatcher creates `To Do`, `Doing` and `On Hold` in a repo that lacks them, and
+never changes one that exists; GitLab creates them when they are first used.
 ↻ UPDATE, in OPEN HANDOFFS and in the full list, asks the dispatcher to read them now instead of
 waiting for its fifteen minutes; it does within a minute, and the button's tooltip says when they
 were last read.
